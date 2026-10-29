@@ -1,0 +1,23 @@
+/// Model Client Interface. A common abstraction over language model APIs.
+///
+/// A `session` resource is created for one agent invocation, with the caller's
+/// `model-settings` and any earlier exchanges from the conversation.
+
+interface model-client {
+    use types.{model-settings, model-request, model-exchange, model-response-stream, model-error};
+
+    /// An agent invocation.
+    resource session {
+        /// Create a session with the caller's settings, continuing from the
+        /// conversation's earlier exchanges, oldest first. Fails on history
+        /// the client cannot use.
+        constructor(settings: model-settings, history: list<model-exchange>) -> result<session, model-error>;
+
+        /// Make one model call and stream the model's response as a series of
+        /// `model-delta` items followed by a final `model-response`.
+        call: async func(request: model-request) -> result<model-response-stream, model-error>;
+
+        /// The exchanges this session's calls made, oldest first.
+        exchanges: func() -> list<model-exchange>;
+    }
+}

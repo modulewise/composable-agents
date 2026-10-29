@@ -1,0 +1,536 @@
+/// Types for `model-client` and `agent`.
+
+interface types {
+
+    /// A JSON value, as text.
+    type json = string;
+
+    // === Model calls ========================================================
+
+    /// Binary/media content as inline bytes or a URL reference.
+    variant content-source {
+        data(media-data),
+        url(string),
+    }
+
+    record media-data {
+        /// MIME type, e.g. "image/png", "application/pdf".
+        mime-type: string,
+        /// Base64-encoded bytes.
+        data: string,
+    }
+
+    /// Result of a tool call made by the agent, correlated by `tool-call-id`.
+    record tool-result {
+        /// ID of the tool call this answers (provider tool_call_id / tool_use_id).
+        tool-call-id: string,
+        /// Name of the tool, as in the `tool-call` this answers.
+        name: string,
+        /// Result content (text and/or media).
+        content: list<result-content>,
+        /// Whether the tool reported an error.
+        is-error: bool,
+    }
+
+    /// Content a tool result may contain.
+    variant result-content {
+        text(string),
+        media(content-source),
+    }
+
+    /// One item of input for a call. The model's input is
+    /// `list<model-input-item>`, allowing e.g. multiple tool-results and/or
+    /// user text in a single call.
+    variant model-input-item {
+        text(string),
+        image(content-source),
+        audio(content-source),
+        video(content-source),
+        document(content-source),
+        tool-result(tool-result),
+    }
+
+    record tool-definition {
+        name: string,
+        description: string,
+        /// JSON Schema describing the tool's input parameters.
+        input-schema: json,
+    }
+
+    /// Controls how the model selects tools.
+    variant tool-choice {
+        auto,
+        none,
+        required,
+        specific(string),
+    }
+
+    /// The caller's settings for one session, supplied to its constructor.
+    record model-settings {
+        /// System-level instructions.
+        instructions: option<string>,
+        /// Tools available for function calling.
+        tools: option<list<tool-definition>>,
+        /// How the model should select tools.
+        tool-choice: option<tool-choice>,
+        /// JSON Schema for structured output.
+        output-schema: option<json>,
+
+        // Common sampling parameters, each taking precedence over the same
+        // setting in the implementing component's own config. Ranges are
+        // provider-dependent. Each implementing component should validate or
+        // clamp for its model. Parameters a given provider does not support
+        // should be ignored.
+        temperature: option<f64>,
+        top-p: option<f64>,
+        top-k: option<u32>,
+        max-tokens: option<u32>,
+        seed: option<u64>,
+        stop-sequences: option<list<string>>,
+    }
+
+    /// One model call's request.
+    record model-request {
+        /// The call's input: e.g. user text, or the results of the tools the
+        /// previous response requested.
+        input: list<model-input-item>,
+        /// This call's output limit in token count, taking precedence over
+        /// `model-settings.max-tokens` (e.g. what remains of a budget).
+        max-tokens: option<u32>,
+    }
+
+    /// An incremental update streamed as the model generates.
+    variant model-delta {
+        /// A fragment of assistant text.
+        text(string),
+        /// A fragment of reasoning/extended-thinking text.
+        reasoning(string),
+        /// A streamed tool-call fragment (assembled by index across deltas).
+        tool-call(tool-call-delta),
+    }
+
+    record tool-call-delta {
+        /// Stream index correlating fragments of the same tool call.
+        index: u32,
+        /// Tool call id, present on the first fragment.
+        id: option<string>,
+        /// Tool name, present on the first fragment.
+        name: option<string>,
+        /// A fragment of the JSON arguments.
+        arguments: string,
+    }
+
+    /// A tool call requested by the model.
+    record tool-call {
+        id: string,
+        name: string,
+        /// The arguments object.
+        arguments: json,
+    }
+
+    /// A reasoning/extended-thinking block produced by the model. If not
+    /// redacted, `text` is the human-readable content. The `opaque-content`
+    /// maps to a provider-specific value (e.g. OpenAI `encrypted_content`,
+    /// Gemini thought signature, Anthropic signature). A session sends the
+    /// reasoning of earlier outputs back to providers that require it,
+    /// `opaque-content` unchanged.
+    record reasoning {
+        /// Human-readable reasoning text or summary. Empty if redacted.
+        text: string,
+        /// Provider-defined reasoning state, as an opaque base64 string, to be
+        /// returned unchanged to continue reasoning in a later call.
+        opaque-content: option<string>,
+        /// True when the reasoning text was deliberately withheld.
+        redacted: bool,
+    }
+
+    /// One item of the model's output, as assembled in the final response.
+    /// The media cases mirror `model-input-item`'s. A client produces one only
+    /// when its API returns that kind of media and the client's config
+    /// specifies it.
+    variant model-output-item {
+        text(string),
+        reasoning(reasoning),
+        tool-call(tool-call),
+        image(content-source),
+        audio(content-source),
+        video(content-source),
+        document(content-source),
+    }
+
+    /// Token counts for one or more model calls, as their providers reported
+    /// them. A count that is `none` was not reported, disctinct from a
+    /// reported 0. A provider may report only some counts, or none at all.
+    record token-usage {
+        /// Input/prompt tokens.
+        input-tokens: option<u64>,
+        /// Output/completion tokens.
+        output-tokens: option<u64>,
+        /// Total tokens.
+        total-tokens: option<u64>,
+        /// Input tokens served from cache.
+        cache-read-tokens: option<u64>,
+        /// Input tokens written to cache.
+        cache-write-tokens: option<u64>,
+        /// Reasoning/thinking tokens.
+        reasoning-tokens: option<u64>,
+        /// How many of the calls these counts cover reported no usage at all:
+        /// for one call, 1 when its provider reported none. A call that failed
+        /// or was canceled before its provider reported usage counts here too.
+        unreported-calls: u32,
+    }
+
+    /// Why the model stopped generating. Each variant carries the raw provider
+    /// value (for OTel gen_ai.response.finish_reasons and logs). The variant
+    /// itself drives the loop's state transitions.
+    variant model-finish-reason {
+        /// Normal end state (openai "stop" / anthropic "end_turn").
+        completed(string),
+        /// Model requested one or more tools (openai "tool_calls" / anthropic "tool_use").
+        tool-requested(string),
+        /// Truncated by token limit (openai "length" / anthropic "max_tokens").
+        truncated(string),
+        /// Hit a stop sequence (anthropic "stop_sequence").
+        stopped(string),
+        /// Blocked by content policy (openai "content_filter" / anthropic "refusal").
+        blocked(string),
+        /// Long-running turn paused, resumable (anthropic "pause_turn").
+        paused(string),
+        /// Any other/unmapped provider reason, holding the raw value.
+        other(string),
+    }
+
+    /// The final result of a call, resolved after the delta stream completes.
+    record model-response {
+        output: list<model-output-item>,
+        finish-reason: model-finish-reason,
+        usage: token-usage,
+        /// Provider-assigned id for this response.
+        response-id: option<string>,
+        /// Actual model that produced the response, if reported.
+        model: option<string>,
+    }
+
+    /// The response for a `call`. The deltas stream as the model generates,
+    /// and the future resolves to the `model-response` when the stream ends.
+    record model-response-stream {
+        /// The model the call requested. The actual response model may differ.
+        model: string,
+        /// The provider serving the call, e.g. "openai" or "ollama".
+        provider: string,
+        deltas: stream<model-delta>,
+        %result: future<result<model-response, model-error>>,
+    }
+
+    record model-error {
+        message: string,
+        /// Provider/transport status code when applicable.
+        status: option<u32>,
+    }
+
+    /// One earlier model call: what was sent and what the model returned.
+    record model-exchange {
+        request: model-request,
+        /// The response's output, or `none` when the call failed, was
+        /// canceled, or dropped.
+        output: option<list<model-output-item>>,
+    }
+
+    // === Agent content and task types (mirrors A2A types) ===================
+
+    /// The sender of a message.
+    enum role {
+        /// Not set, or not recognized.
+        unspecified,
+        /// From the caller to the agent.
+        user,
+        /// From the agent to its caller.
+        agent,
+    }
+
+    /// One section of content: text, file bytes, a file URL, or structured
+    /// data as JSON.
+    variant part-content {
+        text(string),
+        /// Base64-encoded file bytes.
+        raw(string),
+        /// URL pointing to the file content.
+        url(string),
+        /// Arbitrary structured data.
+        data(json),
+    }
+
+    record part {
+        content: part-content,
+        /// Part metadata.
+        metadata: option<json>,
+        /// Optional filename for file parts (e.g. "document.pdf").
+        filename: option<string>,
+        /// MIME type of the content (e.g. "image/png").
+        media-type: option<string>,
+    }
+
+    /// One unit of communication between a caller and an agent.
+    record message {
+        /// Unique id of the message, created by the sender (e.g. a UUID).
+        message-id: string,
+        /// Context this message belongs to, if any.
+        context-id: option<string>,
+        /// Task this message belongs to, if any.
+        task-id: option<string>,
+        role: role,
+        /// The message's content (at least one part).
+        parts: list<part>,
+        /// Message metadata.
+        metadata: option<json>,
+        /// URIs of extensions present on this message.
+        extensions: list<string>,
+        /// Task ids this message references for additional context.
+        reference-task-ids: list<string>,
+    }
+
+    /// Lifecycle states of a task.
+    enum task-state {
+        /// Unknown or indeterminate.
+        unspecified,
+        /// Submitted and acknowledged.
+        submitted,
+        /// Actively being processed.
+        working,
+        /// Finished successfully (terminal).
+        completed,
+        /// Finished with an error (terminal).
+        failed,
+        /// Canceled before completion (terminal).
+        canceled,
+        /// Requires additional user input to proceed (interrupted).
+        input-required,
+        /// The agent declined the task (terminal).
+        rejected,
+        /// Authentication required to proceed (interrupted).
+        auth-required,
+    }
+
+    record task-status {
+        state: task-state,
+        /// Optional message associated with the status.
+        message: option<message>,
+        /// When the status was recorded: an ISO 8601 timestamp in UTC.
+        timestamp: option<string>,
+    }
+
+    record artifact {
+        /// Unique id of the artifact within its task.
+        artifact-id: string,
+        name: option<string>,
+        description: option<string>,
+        /// Content of the artifact (at least one part).
+        parts: list<part>,
+        /// Artifact metadata.
+        metadata: option<json>,
+        /// URIs of extensions present on this artifact.
+        extensions: list<string>,
+    }
+
+    record task {
+        /// Unique id of the task.
+        id: string,
+        /// Context grouping related tasks and messages.
+        context-id: option<string>,
+        status: task-status,
+        artifacts: list<artifact>,
+        /// History of interactions for this task.
+        history: list<message>,
+        /// Task metadata.
+        metadata: option<json>,
+    }
+
+    // === Agent invocations ==================================================
+
+    /// The service provider of the agent: A2A's `AgentProvider`.
+    record agent-provider {
+        /// A URL for the provider's website or relevant documentation.
+        url: string,
+        /// The name of the provider's organization.
+        organization: string,
+    }
+
+    /// An extension the agent supports: A2A's `AgentExtension`.
+    record agent-extension {
+        /// The unique URI identifying the extension.
+        uri: option<string>,
+        /// How this agent uses the extension.
+        description: option<string>,
+        /// If true, the client must understand and comply with the extension's
+        /// requirements.
+        required: option<bool>,
+        /// Extension-specific configuration parameters.
+        params: option<json>,
+    }
+
+    /// A security requirement: A2A's `SecurityRequirement`, with each security
+    /// scheme's name as key and its required scopes as value.
+    record security-requirement {
+        schemes: list<tuple<string, list<string>>>,
+    }
+
+    /// A capability the agent offers its callers, as listed on its A2A card:
+    /// A2A's `AgentSkill`. Not an Agent Skill (`SKILL.md`), which is
+    /// instructions in an agent's own context.
+    record agent-skill {
+        id: string,
+        name: string,
+        description: string,
+        /// At least one tag.
+        tags: list<string>,
+        examples: list<string>,
+        /// Input media types for this skill, overriding the agent's defaults.
+        input-modes: list<string>,
+        /// Output media types for this skill, overriding the agent's defaults.
+        output-modes: list<string>,
+        /// Security requirements specific to this skill.
+        security-requirements: list<security-requirement>,
+    }
+
+    /// Information the agent reports about itself, used in an A2A `AgentCard`.
+    /// The server adds `supported_interfaces`, the rest of `capabilities`,
+    /// `security_schemes`, `security_requirements` and `signatures`.
+    record agent-metadata {
+        name: string,
+        description: string,
+        provider: option<agent-provider>,
+        version: string,
+        /// A URL providing additional documentation about the agent.
+        documentation-url: option<string>,
+        /// Default input media types (at least one).
+        default-input-modes: list<string>,
+        /// Default output media types (at least one).
+        default-output-modes: list<string>,
+        /// The agent's skills (at least one).
+        skills: list<agent-skill>,
+        /// A URL to an icon for the agent.
+        icon-url: option<string>,
+        /// The extensions the agent supports, for the card's
+        /// `capabilities.extensions`. Empty when it supports none.
+        extensions: list<agent-extension>,
+    }
+
+    /// One message for the agent to handle as a task.
+    record agent-request {
+        /// The incoming message.
+        message: message,
+        /// The task this message starts or continues, or `none` for a new
+        /// task, in which case the agent generates an id.
+        task-id: option<string>,
+        /// The context the task belongs to, or `none` for a new context, in
+        /// which case the agent generates an id.
+        context-id: option<string>,
+        /// The media types the caller accepts for response parts (A2A's
+        /// `accepted_output_modes`). Empty when the caller gave none.
+        accepted-output-modes: list<string>,
+        /// The extension URIs the caller wants to use for the request (A2A's
+        /// `A2A-Extensions` service parameter).
+        requested-extensions: list<string>,
+        /// The request's metadata (A2A's `SendMessageRequest.metadata`).
+        metadata: option<json>,
+        /// The status of the task this message continues (`input-required` or
+        /// `auth-required`, with the agent's status message), or `none` when
+        /// the message starts a new task and thus has no status yet.
+        task-status: option<task-status>,
+        /// The tasks the message names in `reference-task-ids`.
+        related-tasks: list<task>,
+        /// The conversation's earlier model exchanges, oldest first. Empty for
+        /// a caller that does not maintain history.
+        history: list<model-exchange>,
+        /// The limit on tokens the invocation's model calls may use in total,
+        /// as its `usage` counts them, or `none` when no budget limits are in
+        /// effect. An agent that doesn't enforce budgets refuses a request
+        /// that carries one.
+        token-budget: option<u64>,
+    }
+
+    /// An update to the task.
+    variant agent-event {
+        /// The task's status changed to indicate progress or a message for the
+        /// caller.
+        status(task-status-update-event),
+        /// Content for an artifact.
+        artifact(task-artifact-update-event),
+    }
+
+    /// A2A's `TaskStatusUpdateEvent`.
+    record task-status-update-event {
+        task-id: string,
+        context-id: string,
+        status: task-status,
+        /// Event metadata.
+        metadata: option<json>,
+    }
+
+    /// A2A's `TaskArtifactUpdateEvent`.
+    record task-artifact-update-event {
+        task-id: string,
+        context-id: string,
+        artifact: artifact,
+        /// Adds to an artifact already sent with the same id.
+        append: option<bool>,
+        /// The artifact's last chunk.
+        last-chunk: option<bool>,
+        /// Event metadata.
+        metadata: option<json>,
+    }
+
+    /// Why an invocation ended, beside the task's state.
+    variant agent-finish-reason {
+        /// The model's last call ended for this reason.
+        model(model-finish-reason),
+        /// The agent reached its limit on model calls.
+        turn-limit,
+        /// The agent spent its token budget, so it made no further call.
+        budget,
+    }
+
+    /// The task's outcome.
+    record agent-response {
+        /// The task's final status: a terminal state (`failed` and `canceled`
+        /// included), or `input-required` or `auth-required`.
+        status: task-status,
+        /// The task's artifacts, assembled.
+        artifacts: list<artifact>,
+        /// The model exchanges this invocation added, for the caller to keep.
+        added-history: list<model-exchange>,
+        /// Token counts across the invocation's model calls (see
+        /// `token-usage`).
+        usage: token-usage,
+        /// Why the invocation ended, or `none` when the task's state is
+        /// sufficient (e.g. `canceled`).
+        finish-reason: option<agent-finish-reason>,
+    }
+
+    /// A response from `invoke`. The task's events stream as they occur, and
+    /// the future resolves to the `agent-response` when the stream ends.
+    record agent-response-stream {
+        /// The task id, either from the request or generated by the agent.
+        task-id: string,
+        /// The context id, either from the request or generated by the agent.
+        context-id: string,
+        /// The extensions from `requested-extensions` that the agent activated
+        /// to handle this request, for the response's `A2A-Extensions`.
+        activated-extensions: list<string>,
+        events: stream<agent-event>,
+        %result: future<result<agent-response, agent-error>>,
+    }
+
+    /// A failure to handle a request as a task, distinct from a task that did
+    /// run but failed. Follows A2A's error model: a code, a message, and
+    /// optional details.
+    record agent-error {
+        /// A JSON-RPC error code, either standard (e.g. -32602 invalid params,
+        /// -32603 internal error) or A2A (-32001 to -32099, e.g. -32005
+        /// content type not supported).
+        code: s32,
+        message: string,
+        /// A2A's error details: an array of objects, each with an `@type` key.
+        data: option<json>,
+    }
+}
