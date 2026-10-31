@@ -1,0 +1,17 @@
+[component.model]
+uri = "./lib/model.wasm"
+imports = ["model-client"]
+
+[component.model-client]
+uri = "../../components/lib/chat-completions-client.wasm"
+imports = ["http-client"]
+config.base-url = "http://localhost:11434/v1"
+config.provider = "ollama"
+config.model = "gpt-oss:20b"
+
+[component.http-client]
+uri = "oci://ghcr.io/componentized/http/client:0.1.0"
+imports = ["http"]
+
+[capability.http]
+type = "wasi:http"

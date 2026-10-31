@@ -1,0 +1,10 @@
+package composable-agents:chat-completions-client@0.1.0;
+
+/// A model client for the OpenAI Chat Completions API and any other provider
+/// that supports that API.
+world chat-completions-client {
+    import wasi:config/store@0.2.0-rc.1;
+    import componentized:http/client@0.1.0;
+
+    export composable:agents/model-client@0.1.0;
+}
