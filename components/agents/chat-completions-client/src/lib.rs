@@ -72,7 +72,7 @@ impl GuestSession for SessionState {
         let model = required_config(MODEL_CONFIG)?;
         let provider = required_config(PROVIDER_CONFIG)?;
         let body =
-            mapping::build_request(&self.settings, &model, max_tokens, &self.history.borrow())?;
+            mapping::build_request(&model, &self.history.borrow(), &self.settings, max_tokens)?;
         let response = send_request(&self.config_endpoint(), &self.auth_headers(), body).await?;
 
         // Stream the SSE body in a spawned task. Write deltas as they arrive,

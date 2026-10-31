@@ -471,10 +471,10 @@ fn to_openai_tool_choice(choice: &ToolChoice) -> serde_json::Value {
 }
 
 pub(crate) fn build_request(
-    settings: &ModelSettings,
     model: &str,
-    max_tokens: Option<u32>,
     history: &[Message],
+    settings: &ModelSettings,
+    max_tokens: Option<u32>,
 ) -> Result<Vec<u8>, ModelError> {
     let tools = settings
         .tools
@@ -962,7 +962,7 @@ mod tests {
             ..settings_with_tools(&[])
         };
         let body: serde_json::Value =
-            serde_json::from_slice(&build_request(&settings, "gpt-test", None, &[]).unwrap())
+            serde_json::from_slice(&build_request("gpt-test", &[], &settings, None).unwrap())
                 .unwrap();
         assert_eq!(
             body["response_format"],
@@ -982,7 +982,7 @@ mod tests {
         );
 
         let without: serde_json::Value = serde_json::from_slice(
-            &build_request(&settings_with_tools(&[]), "gpt-test", None, &[]).unwrap(),
+            &build_request("gpt-test", &[], &settings_with_tools(&[]), None).unwrap(),
         )
         .unwrap();
         assert!(without.get("response_format").is_none());
@@ -991,7 +991,7 @@ mod tests {
             output_schema: Some("{not json".into()),
             ..settings_with_tools(&[])
         };
-        assert!(build_request(&invalid, "gpt-test", None, &[]).is_err());
+        assert!(build_request("gpt-test", &[], &invalid, None).is_err());
     }
 
     #[test]

@@ -12,8 +12,9 @@ reply JSON will match it.
 
 ## Prerequisites
 
-- `composable` (composable-runtime's CLI), `wasm-tools`, and Rust's
-  `wasm32-unknown-unknown` target
+- `composable` (composable-runtime's CLI)
+- `wasm-tools`
+- a rust toolchain with the `wasm32-unknown-unknown` target
 - chat-completions-client built: `../../components/build.sh`
 - Ollama serving `gpt-oss:20b`, or another model specified in `config.toml`
   (see below)
@@ -32,6 +33,15 @@ reply JSON will match it.
 
 The script asks for the capital of the given place (France by default) and its
 population, passing an output schema for the reply.
+
+Output will match the schema:
+
+```json
+{
+  "city": "Tokyo",
+  "population": 14226056
+}
+```
 
 ## Configuring the Model Provider
 

@@ -38,7 +38,7 @@ History follows four rules:
   request. The APIs reject a conversation with an unanswered call.
 - **The session replays reasoning** from earlier outputs, with any opaque
   state unchanged.
-- **Dropping the deltas cancels the call:** the client stops reading and
+- **Dropping the deltas cancels the call.** The client stops reading and
   closes the connection, so the provider will stop generating.
 - **Nothing is dropped silently.** A new call fails on input the client
   cannot send. In history, such input and any media the API cannot carry are
@@ -55,8 +55,8 @@ JSON Schema `response_format`. Its config:
 |---|---|
 | `model` | required |
 | `provider` | required: the provider name each call reports |
-| `base-url` | default `https://api.openai.com/v1` |
-| `api-key` | sent as a bearer token |
+| `base-url` | default: `https://api.openai.com/v1` (set one for different providers) |
+| `api-key` | optional: sent as a bearer token when set (most hosted providers require one) |
 | `max-tokens` | optional default, overridden by `model-settings` and the request |
 
 Example: [`examples/chat-completions`](../../examples/chat-completions).
