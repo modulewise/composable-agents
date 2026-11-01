@@ -59,7 +59,7 @@ JSON Schema `response_format`. Its config:
 | `api-key` | optional: sent as a bearer token when set (most hosted providers require one) |
 | `max-tokens` | optional default, overridden by `model-settings` and the request |
 
-Example: [`examples/chat-completions`](../../examples/chat-completions).
+Example: [`examples/chat-completions`](../../examples/chat-completions)
 
 > [!NOTE]
 >
@@ -67,3 +67,42 @@ Example: [`examples/chat-completions`](../../examples/chat-completions).
 > generated config component. That will change once secret management support
 > is available (on the roadmap). This project is still in an early development
 > phase, not yet intended for any "real world" usage.
+
+## agent
+
+An agent handles each `invoke` as a task:
+
+- **`metadata()`** describes the agent (name, skills, input and output modes),
+  which may contribute to an A2A agent card.
+- **`invoke(request)`** takes one message, with the conversation's earlier
+  model exchanges as `history`, and returns the task's events as they occur
+  (status updates and artifact chunks), with a future of the final
+  `agent-response`.
+
+The response carries the task's final status, its assembled artifacts, the
+model exchanges the invocation added (for the caller to keep and pass as the
+next request's `history`), the token usage, and a finish reason. An
+`agent-error` means the request could not be handled as a task, which is
+distinct from a task that ran and failed. An agent that does not enforce a
+request's `token-budget` refuses the request.
+
+## chat-agent
+
+Implements `agent` with one call to a `model-client` per message, so it can be
+composed with any client, e.g. `chat-completions-client`. It has no tools. Text
+and data parts become text input, and files become image, audio, video, or
+document input by media type, which the client may refuse. It does not enforce
+token budgets yet, so it refuses any request that includes one.
+
+The task streams a `working` status, then the model's text as the chunks of one
+artifact, with the last chunk marked. Reasoning is left out. Dropping the event
+stream cancels the task and its model call. If the call fails, the task fails
+with the error as its status message, and any text already streamed remains its
+artifact. Its config:
+
+| Key | |
+|---|---|
+| `name` | required: the agent's name in its metadata |
+| `description` | required: the agent's description, also used for its one skill |
+| `version` | required: the agent's version in its metadata |
+| `instructions` | optional: the model's instructions (`model-settings.instructions`) |
