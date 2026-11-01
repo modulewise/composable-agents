@@ -398,7 +398,8 @@ fn text_part(text: String) -> Part {
 }
 
 // A message's parts as model input. Includes text and structured data as text,
-// and a file as the input its media type names.
+// and a file as media data with its specified media type, or
+// `application/octet-stream` if not specified.
 fn model_input(parts: &[Part]) -> Vec<ModelInputItem> {
     parts
         .iter()
