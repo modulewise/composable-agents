@@ -1,0 +1,9 @@
+package composable-agents:chat-agent@0.1.0;
+
+world chat-agent {
+    import wasi:config/store@0.2.0-rc.1;
+    import wasi:random/random@0.3.0;
+    import composable:agents/model-client@0.1.0;
+
+    export composable:agents/agent@0.1.0;
+}

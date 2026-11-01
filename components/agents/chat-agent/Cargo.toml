@@ -1,0 +1,12 @@
+[package]
+name = "chat-agent"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+futures = { version = "0.3", default-features = false }
+uuid = { version = "1", default-features = false }
+wit-bindgen = { workspace = true, features = ["async-spawn", "futures-stream"] }
