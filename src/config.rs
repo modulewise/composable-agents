@@ -89,8 +89,9 @@ impl AgentConfigHandler {
         if let Some(max_tokens) = optional_u32(&context, "max-tokens", properties)? {
             config.insert("max-tokens".to_string(), json!(max_tokens));
         }
-        // Each provider names the client for its API, and the endpoint and
-        // API key that client needs. The client knows OpenAI's endpoint.
+        // Each provider specifies the client for its API, and the default
+        // endpoint and API key required by that client. The chat completions
+        // client defaults to OpenAI's endpoint.
         let (uri, base_url, api_key) = match provider.as_str() {
             "anthropic" => (
                 CHAT_COMPLETIONS_CLIENT,
