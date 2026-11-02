@@ -1,0 +1,7 @@
+# The local registry these components are pushed to, which serves plain HTTP.
+# Registries not listed here are reached over HTTPS.
+[registry."localhost:5001"]
+type = "oci"
+
+[registry."localhost:5001".oci]
+protocol = "http"
