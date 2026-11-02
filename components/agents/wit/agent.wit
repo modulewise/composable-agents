@@ -12,3 +12,11 @@ interface agent {
     /// Handle a request as a task. Stream the task's events, then its outcome.
     invoke: async func(request: agent-request) -> result<agent-response-stream, agent-error>;
 }
+
+/// An agent that delegates to a model. An agent component may include this
+/// world in its own, along with anything else it imports.
+world base-agent {
+    import model-client;
+
+    export agent;
+}

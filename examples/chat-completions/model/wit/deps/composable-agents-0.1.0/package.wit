@@ -566,3 +566,11 @@ interface model-client {
   }
 }
 
+/// An agent that delegates to a model. An agent component may include this
+/// world in its own, along with anything else it imports.
+world base-agent {
+  import types;
+  import model-client;
+
+  export agent;
+}
