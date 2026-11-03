@@ -53,6 +53,8 @@ fn agents_sharing_a_model_define_components_and_capabilities() -> Result<()> {
         [agent.assistant]
         model = "local"
         instructions = "Assist."
+        description = "Assists"
+        version = "0.1.0"
         "#,
     )?;
 
@@ -73,6 +75,8 @@ fn an_agent_rejects_a_property_it_does_not_claim() {
 
         [agent.helper]
         model = "local"
+        description = "Helps"
+        version = "0.1.0"
         toolset = "tools"
         "#,
     )

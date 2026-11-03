@@ -2,6 +2,77 @@
 
 *Work in Progress* 
 
+Agents and model clients as Wasm components that run on
+[composable-runtime](https://github.com/modulewise/composable-runtime).
+The WIT they implement is in [components/agents](components/agents).
+
+## Config
+
+`AgentService` handles `[model]` and `[agent]` definitions. Each becomes a
+component with the definition's name.
+
+### `[model]`
+
+```toml
+[model.local]
+provider = "ollama"
+name = "gpt-oss:20b"
+```
+
+| Property | Required | Description |
+|---|---|---|
+| `provider` | yes | `anthropic`, `ollama` or `openai` (more to come) |
+| `name` | yes | the provider's model name |
+| `max-tokens` | no | the default limit on output tokens per call, overridden by the agent's settings or request |
+
+### `[agent]`
+
+```toml
+[agent.assistant]
+model = "local"
+description = "Answers questions concisely"
+version = "0.1.0"
+instructions = "Answer in one or two sentences."
+```
+
+| Property | Required | Description |
+|---|---|---|
+| `model` | yes | the name of a `[model]` |
+| `description` | yes | the agent's description, in its metadata |
+| `version` | yes | the agent's version, in its metadata |
+| `instructions` | no | the model's system instructions |
+
+## CLI
+
+The `agents` CLI lists and invokes the agents in one or more definition files.
+
+```sh
+cargo install --path crates/cli
+```
+
+`agents list` prints each agent's metadata as JSON, keyed by component name:
+
+```sh
+agents list config.toml
+```
+
+`agents invoke` sends a message to an agent as a new task. The message is the
+argument after the agent's name, or stdin if none is given. The artifact text
+streams to stdout, and the task's status, finish reason and usage go to
+stderr. It exits successfully only when the task completes.
+
+```sh
+agents invoke config.toml -- assistant "Why is the sky blue?"
+```
+
+or
+
+```sh
+echo "Why is the sky blue?" | agents invoke config.toml -- assistant
+```
+
+See [examples/chat-agent](examples/chat-agent).
+
 ## License
 
 Copyright (c) 2026 Modulewise Inc and the Composable Agents contributors.
