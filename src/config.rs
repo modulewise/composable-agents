@@ -130,7 +130,7 @@ impl AgentConfigHandler {
         let description = required_string(&context, "description", properties)?;
         let version = required_string(&context, "version", properties)?;
 
-        // The agent's `metadata()` reads its name, description and version,
+        // The agent's `metadata()` reads its name, description, and version,
         // each of which `agent-metadata` requires.
         let mut config = Map::from_iter([
             ("name".to_string(), json!(name)),

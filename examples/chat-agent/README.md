@@ -4,7 +4,7 @@ Demonstrates an agent defined in config and invoked with the `agents` CLI. The
 `[agent.assistant]` definition in `config.toml` becomes a `chat-agent`
 component importing the model defined by `[model.local]`, which becomes a
 `chat-completions-client` component calling Ollama. Each invocation is one
-task. The agent sends the message to the model, and streams the reply as the
+task. The agent sends the message to the model and streams the reply as the
 task's artifact.
 
 ## Prerequisites
@@ -30,7 +30,7 @@ task's artifact.
 ```
 
 The script lists the agent's metadata, then invokes it with the question. The
-reply streams to stdout, and the task's status, finish reason and usage go to
+reply streams to stdout, and the task's status, finish reason, and usage go to
 stderr:
 
 ```

@@ -57,18 +57,12 @@ agents list config.toml
 ```
 
 `agents invoke` sends a message to an agent as a new task. The message is the
-argument after the agent's name, or stdin if none is given. The artifact text
+argument after the agent's name (or stdin if none is given). The artifact text
 streams to stdout, and the task's status, finish reason and usage go to
 stderr. It exits successfully only when the task completes.
 
 ```sh
 agents invoke config.toml -- assistant "Why is the sky blue?"
-```
-
-or
-
-```sh
-echo "Why is the sky blue?" | agents invoke config.toml -- assistant
 ```
 
 See [examples/chat-agent](examples/chat-agent).

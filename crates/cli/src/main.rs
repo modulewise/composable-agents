@@ -86,7 +86,7 @@ async fn list(host: &AgentHost) -> Result<ExitCode> {
 }
 
 // Invokes `agent` with `text`, writing its artifacts to stdout as they stream,
-// and its status changes, final status, finish reason and usage to stderr.
+// and its status changes, final status, finish reason, and usage to stderr.
 // Succeeds only if the task completes.
 async fn invoke(host: &AgentHost, agent: &str, text: String) -> Result<ExitCode> {
     let mut stdout = std::io::stdout();
@@ -423,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn each_part_is_written_as_text_on_its_own_line_and_status_changes_are_not() {
+    fn each_part_is_written_to_stdout_on_its_own_line_but_a_status_change_is_not() {
         let mut stdout = Vec::new();
         let mut needs_newline = false;
         let mut raw = part(PartContent::Raw("AAAA".to_string()));
