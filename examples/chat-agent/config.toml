@@ -1,0 +1,9 @@
+[model.local]
+provider = "ollama"
+name = "gpt-oss:20b"
+
+[agent.assistant]
+model = "local"
+description = "Answers questions concisely"
+version = "0.1.0"
+instructions = "Answer in one or two sentences."

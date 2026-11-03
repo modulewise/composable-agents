@@ -1,0 +1,20 @@
+[package]
+name = "composable-agents-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "agents"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap = { version = "4.6", features = ["derive"] }
+composable-agents = { path = "../.." }
+composable-otel = { git = "https://github.com/modulewise/composable-runtime", branch = "main" }
+composable-runtime.workspace = true
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
+serde_json.workspace = true
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }

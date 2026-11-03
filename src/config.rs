@@ -127,13 +127,18 @@ impl AgentConfigHandler {
     fn agent(&mut self, name: &str, properties: &mut PropertyMap) -> Result<Vec<Definition>> {
         let context = format!("Agent '{name}'");
         let model = required_string(&context, "model", properties)?;
+        let description = required_string(&context, "description", properties)?;
+        let version = required_string(&context, "version", properties)?;
 
-        // The agent's `metadata()` reads its name, description and version.
-        let mut config = Map::from_iter([("name".to_string(), json!(name))]);
-        for key in ["instructions", "description", "version"] {
-            if let Some(value) = optional_string(&context, key, properties)? {
-                config.insert(key.to_string(), json!(value));
-            }
+        // The agent's `metadata()` reads its name, description, and version,
+        // each of which `agent-metadata` requires.
+        let mut config = Map::from_iter([
+            ("name".to_string(), json!(name)),
+            ("description".to_string(), json!(description)),
+            ("version".to_string(), json!(version)),
+        ]);
+        if let Some(instructions) = optional_string(&context, "instructions", properties)? {
+            config.insert("instructions".to_string(), json!(instructions));
         }
         let mut definitions = vec![component(
             name,
@@ -421,12 +426,13 @@ mod tests {
     #[test]
     fn the_random_capability_is_shared_by_all_agents() {
         let mut handler = AgentConfigHandler::default();
+        let properties = json!({ "model": "local", "description": "Helps", "version": "1.0.0" });
         handler
-            .handle_definition(definition("agent", "first", json!({ "model": "local" })))
+            .handle_definition(definition("agent", "first", properties.clone()))
             .unwrap();
         let second = produced(
             handler
-                .handle_definition(definition("agent", "second", json!({ "model": "local" })))
+                .handle_definition(definition("agent", "second", properties))
                 .unwrap(),
         );
         assert_eq!(
@@ -443,5 +449,29 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("missing required 'model'"), "{error}");
+    }
+
+    #[test]
+    fn an_agent_requires_a_description_and_version() {
+        let mut handler = AgentConfigHandler::default();
+        let error = handler
+            .handle_definition(definition(
+                "agent",
+                "helper",
+                json!({ "model": "local", "version": "1.0.0" }),
+            ))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("missing required 'description'"), "{error}");
+
+        let error = handler
+            .handle_definition(definition(
+                "agent",
+                "helper",
+                json!({ "model": "local", "description": "Helps" }),
+            ))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("missing required 'version'"), "{error}");
     }
 }
