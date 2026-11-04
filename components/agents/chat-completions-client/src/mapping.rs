@@ -3,14 +3,18 @@
 
 use std::convert::Infallible;
 
-use serde::{Deserialize, Serialize};
-
-use crate::composable::agents::types::{
+use model_client_support::sse::Events;
+use model_client_support::types::{
     ContentSource, ModelDelta, ModelError, ModelExchange, ModelFinishReason, ModelInputItem,
     ModelOutputItem, ModelResponse, ModelSettings, ResultContent, TokenUsage, ToolCall,
     ToolCallDelta, ToolChoice, ToolDefinition,
 };
-use wit_bindgen::rt::async_support::{StreamReader, StreamWriter};
+use model_client_support::{
+    Deltas, history_input_note, json_error_position, output_media_note, tool_result_media_note,
+    unsendable_input_error,
+};
+use serde::{Deserialize, Serialize};
+use wit_bindgen::rt::async_support::StreamReader;
 
 // === Outgoing request =======================================================
 
@@ -105,25 +109,20 @@ impl Message {
     }
 }
 
-/// A new call's input as messages. The user's content as one user turn, and
-/// each tool result as a tool message. It fails on input this client cannot
+/// A new call's input as messages: each tool result as a tool message, then
+/// the user's content as one user turn. It fails on input this client cannot
 /// send, before the call is recorded.
 pub(crate) fn input_items_to_messages(
     input: &[ModelInputItem],
 ) -> Result<Vec<Message>, ModelError> {
     input_messages(input, |kind, source| {
-        Err(ModelError {
-            message: format!(
-                "this client cannot send {kind} input ({})",
-                media_detail(source)
-            ),
-            status: None,
-        })
+        Err(unsendable_input_error(kind, source))
     })
 }
 
-// A call's input as messages. `unsendable` decides how to handle any item this
-// client cannot send: an error, or a text replacement.
+// A call's input as messages, with tool messages first, since the API requires
+// them right after the assistant message with the tool calls. `unsendable`
+// returns an error or a text replacement for input this client cannot send.
 fn input_messages<E>(
     input: &[ModelInputItem],
     unsendable: impl Fn(&str, &ContentSource) -> Result<String, E>,
@@ -148,9 +147,6 @@ fn input_messages<E>(
                 text: unsendable("document", source)?,
             },
             ModelInputItem::ToolResult(result) => {
-                if !parts.is_empty() {
-                    messages.push(Message::user(std::mem::take(&mut parts)));
-                }
                 messages.push(Message::tool(
                     result.tool_call_id.clone(),
                     tool_result_text(&result.content),
@@ -172,10 +168,7 @@ fn tool_result_text(content: &[ResultContent]) -> String {
         .iter()
         .map(|content| match content {
             ResultContent::Text(text) => text.clone(),
-            ResultContent::Media(source) => format!(
-                "[The tool returned media ({}), which is left out of the result sent to this model.]",
-                media_detail(source)
-            ),
+            ResultContent::Media(source) => tool_result_media_note(source),
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -186,14 +179,6 @@ fn image_url(source: &ContentSource) -> String {
     match source {
         ContentSource::Data(media) => format!("data:{};base64,{}", media.mime_type, media.data),
         ContentSource::Url(url) => url.clone(),
-    }
-}
-
-// Media detail for a note, either its media type or its URL.
-fn media_detail(source: &ContentSource) -> &str {
-    match source {
-        ContentSource::Data(media) => &media.mime_type,
-        ContentSource::Url(url) => url,
     }
 }
 
@@ -213,10 +198,7 @@ pub(crate) fn history_to_messages(
     }
     for exchange in history {
         let Ok(input) = input_messages(&exchange.request.input, |kind, source| {
-            Ok::<_, Infallible>(format!(
-                "[This turn included {kind} input ({}), which is left out of the history sent to this model.]",
-                media_detail(source)
-            ))
+            Ok::<_, Infallible>(history_input_note(kind, source))
         });
         messages.extend(input);
         if let Some(output) = &exchange.output {
@@ -226,35 +208,8 @@ pub(crate) fn history_to_messages(
     messages
 }
 
-/// Fails on a tool call in `history` that the next exchange's request doesn't
-/// answer with a tool result, since the API rejects a conversation with one.
-pub(crate) fn require_answered_tool_calls(history: &[ModelExchange]) -> Result<(), ModelError> {
-    for (i, exchange) in history.iter().enumerate() {
-        let answers = history
-            .get(i + 1)
-            .map_or(&[][..], |next| next.request.input.as_slice());
-        for item in exchange.output.iter().flatten() {
-            if let ModelOutputItem::ToolCall(call) = item
-                && !answers.iter().any(|input| {
-                    matches!(input, ModelInputItem::ToolResult(result) if result.tool_call_id == call.id)
-                })
-            {
-                return Err(ModelError {
-                    message: format!(
-                        "tool call '{}' to '{}' has no result in the next exchange",
-                        call.id, call.name
-                    ),
-                    status: None,
-                });
-            }
-        }
-    }
-    Ok(())
-}
-
-// A response's output as one assistant message, with tool names sanitized as
-// they were sent. Reasoning has no Chat Completions form. Media, which another
-// client's model may have produced, becomes a note in its place.
+// A response's output as one assistant message. Reasoning is left out (Chat
+// Completions has no form for it), and media becomes a note.
 fn output_items_to_message(output: &[ModelOutputItem]) -> Message {
     let mut paragraphs: Vec<String> = Vec::new();
     let mut in_text = false;
@@ -265,7 +220,7 @@ fn output_items_to_message(output: &[ModelOutputItem]) -> Message {
                 _ => paragraphs.push(text.clone()),
             }
             in_text = true;
-        } else if let Some(note) = media_note(item) {
+        } else if let Some(note) = output_media_note(item) {
             paragraphs.push(note);
             in_text = false;
         }
@@ -278,7 +233,7 @@ fn output_items_to_message(output: &[ModelOutputItem]) -> Message {
                 id: call.id.clone(),
                 kind: "function",
                 function: AssistantToolCallFunction {
-                    name: sanitize_tool_name(&call.name),
+                    name: call.name.clone(),
                     arguments: call.arguments.clone(),
                 },
             }),
@@ -289,22 +244,6 @@ fn output_items_to_message(output: &[ModelOutputItem]) -> Message {
         (!text.is_empty()).then_some(text),
         (!tool_calls.is_empty()).then_some(tool_calls),
     )
-}
-
-// A note in place of media the model produced, which this client doesn't send
-// back in an assistant message.
-fn media_note(item: &ModelOutputItem) -> Option<String> {
-    let (kind, source) = match item {
-        ModelOutputItem::Image(source) => ("image", source),
-        ModelOutputItem::Audio(source) => ("audio", source),
-        ModelOutputItem::Video(source) => ("video", source),
-        ModelOutputItem::Document(source) => ("document", source),
-        _ => return None,
-    };
-    Some(format!(
-        "[This turn produced {kind} output ({}), which is left out of the history sent to this model.]",
-        media_detail(source)
-    ))
 }
 
 #[derive(Serialize)]
@@ -326,6 +265,8 @@ struct ChatRequest<'a> {
     top_p: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     seed: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -391,17 +332,8 @@ struct ToolFunction {
     parameters: serde_json::Value,
 }
 
-// OpenAI requires tool function names to match `^[a-zA-Z0-9_-]+$`, so a tool
-// name containing a `.` (common in MCP names) translates to use `_`. The
-// reverse mapping is applied to tool-call names in the response. Other invalid
-// characters are left as is, so they will be rejected with an explicit error.
-fn sanitize_tool_name(name: &str) -> String {
-    name.replace('.', "_")
-}
-
-// Map a WIT tool-definition to the OpenAI tool shape (with a sanitized name).
-// The input-schema is a JSON Schema string embedded as a JSON object. A parse
-// failure leads to an error for the request since the tool should not be used.
+// An OpenAI tool definition, with its input schema parsed into JSON. An
+// invalid schema fails the request.
 fn to_openai_tool(def: &ToolDefinition) -> Result<Tool, ModelError> {
     let parameters = serde_json::from_str(&def.input_schema).map_err(|e| ModelError {
         message: format!("tool '{}' has an invalid input-schema: {e}", def.name),
@@ -410,7 +342,7 @@ fn to_openai_tool(def: &ToolDefinition) -> Result<Tool, ModelError> {
     Ok(Tool {
         kind: "function",
         function: ToolFunction {
-            name: sanitize_tool_name(&def.name),
+            name: def.name.clone(),
             description: if def.description.is_empty() {
                 None
             } else {
@@ -421,43 +353,6 @@ fn to_openai_tool(def: &ToolDefinition) -> Result<Tool, ModelError> {
     })
 }
 
-// A sanitized-name => original-name map for reversing tool-call names in the
-// response. Only names that were actually sanitized are stored.
-type ToolNameMap = std::collections::HashMap<String, String>;
-
-/// Fails when two tools would reach the API having the same name. Sanitizing
-/// makes `a.b` collide with any explicit `a_b`.
-pub(crate) fn require_distinct_tool_names(settings: &ModelSettings) -> Result<(), ModelError> {
-    let mut sent: std::collections::HashMap<String, &str> = std::collections::HashMap::new();
-    for def in settings.tools.iter().flatten() {
-        let name = sanitize_tool_name(&def.name);
-        if let Some(other) = sent.insert(name.clone(), &def.name) {
-            return Err(ModelError {
-                message: format!(
-                    "tools '{other}' and '{}' would both be sent as '{name}'",
-                    def.name
-                ),
-                status: None,
-            });
-        }
-    }
-    Ok(())
-}
-
-// Build the sanitized => original tool-name map from the configured tools.
-fn tool_name_map(settings: &ModelSettings) -> ToolNameMap {
-    let mut map = ToolNameMap::new();
-    if let Some(tools) = &settings.tools {
-        for def in tools {
-            let sanitized = sanitize_tool_name(&def.name);
-            if sanitized != def.name {
-                map.insert(sanitized, def.name.clone());
-            }
-        }
-    }
-    map
-}
-
 // Map the WIT tool-choice to the OpenAI `tool_choice` value.
 fn to_openai_tool_choice(choice: &ToolChoice) -> serde_json::Value {
     match choice {
@@ -465,15 +360,40 @@ fn to_openai_tool_choice(choice: &ToolChoice) -> serde_json::Value {
         ToolChoice::None => serde_json::json!("none"),
         ToolChoice::Required => serde_json::json!("required"),
         ToolChoice::Specific(name) => {
-            serde_json::json!({ "type": "function", "function": { "name": sanitize_tool_name(name) } })
+            serde_json::json!({ "type": "function", "function": { "name": name } })
         }
     }
 }
+
+/// The request field the token limit is sent in: `max_completion_tokens`, or
+/// `max_tokens` for servers that still use that (such as Ollama).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) enum MaxTokensField {
+    MaxTokens,
+    #[default]
+    MaxCompletionTokens,
+}
+
+impl std::str::FromStr for MaxTokensField {
+    type Err = ();
+
+    fn from_str(value: &str) -> Result<Self, ()> {
+        match value {
+            "max_tokens" => Ok(MaxTokensField::MaxTokens),
+            "max_completion_tokens" => Ok(MaxTokensField::MaxCompletionTokens),
+            _ => Err(()),
+        }
+    }
+}
+
+/// A valid `max-tokens-field` value, for the error on an invalid one.
+pub(crate) const MAX_TOKENS_FIELD_VALUES: &str = "max_tokens or max_completion_tokens";
 
 pub(crate) fn build_request(
     model: &str,
     history: &[Message],
     settings: &ModelSettings,
+    max_tokens_field: MaxTokensField,
     max_tokens: Option<u32>,
 ) -> Result<Vec<u8>, ModelError> {
     let tools = settings
@@ -501,7 +421,9 @@ pub(crate) fn build_request(
         },
         temperature: settings.temperature,
         top_p: settings.top_p,
-        max_tokens,
+        max_tokens: max_tokens.filter(|_| max_tokens_field == MaxTokensField::MaxTokens),
+        max_completion_tokens: max_tokens
+            .filter(|_| max_tokens_field == MaxTokensField::MaxCompletionTokens),
         seed: settings.seed,
         stop: settings.stop_sequences.clone(),
         tools,
@@ -545,6 +467,8 @@ struct ChunkChoice {
 struct ChunkDelta {
     #[serde(default)]
     content: Option<String>,
+    #[serde(default)]
+    refusal: Option<String>,
     #[serde(default)]
     tool_calls: Vec<ToolCallChunk>,
 }
@@ -603,6 +527,7 @@ struct Accumulator {
     response_id: Option<String>,
     model: Option<String>,
     text: String,
+    refusal: String,
     /// Tool calls accumulated by stream index.
     tool_calls: Vec<AccTool>,
     finish_reason: Option<String>,
@@ -618,111 +543,85 @@ struct AccTool {
     arguments: String,
 }
 
-/// Consume the SSE body stream. Parse chunks, write `ModelDelta`s to `deltas`,
-/// and return the assembled response plus the assistant message to record in
-/// history. When the caller drops `deltas`, it stops reading and drops the
-/// body, which closes the connection so the provider stops generating.
+/// Reads the SSE body, writing deltas to `deltas`, and returns the assembled
+/// response and the assistant message for history. If the caller stops
+/// reading the deltas, it fails and drops the body, closing the connection.
 pub(crate) async fn stream_response(
-    mut body: StreamReader<u8>,
-    deltas: &mut StreamWriter<ModelDelta>,
-    settings: &ModelSettings,
+    body: StreamReader<u8>,
+    deltas: &mut Deltas,
 ) -> Result<(ModelResponse, Message), ModelError> {
     let mut acc = Accumulator::default();
-    let mut buf: Vec<u8> = Vec::new();
-
-    loop {
-        let (result, chunk) = body.read(Vec::with_capacity(8192)).await;
-        if !chunk.is_empty() {
-            buf.extend_from_slice(&chunk);
+    let mut events = Events::new(body);
+    // Each event's data is a chunk; the final `[DONE]` is skipped. Fails on an
+    // error chunk, unreadable data, or when the caller stops reading the deltas.
+    while let Some(event) = events.next().await {
+        if event.is_done() {
+            continue;
         }
-        // Process complete newline-delimited SSE lines from the buffer.
-        while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
-            let line = buf.drain(..=pos).collect::<Vec<u8>>();
-            process_line(&line, &mut acc, deltas).await?;
-        }
-        if matches!(
-            result,
-            wit_bindgen::rt::async_support::StreamResult::Dropped
-        ) {
-            break;
-        }
+        apply_chunk(chunk_of(&event.data)?, &mut acc, deltas).await?;
     }
-
-    complete(acc, &tool_name_map(settings))
+    complete(acc)
 }
 
 // The response the stream assembled. A response ends with a chunk that
 // includes its finish reason. A body that ended before one arrived, as when
 // the connection drops, is no response.
-fn complete(
-    acc: Accumulator,
-    tool_names: &ToolNameMap,
-) -> Result<(ModelResponse, Message), ModelError> {
+fn complete(acc: Accumulator) -> Result<(ModelResponse, Message), ModelError> {
     if acc.finish_reason.is_none() {
         return Err(ModelError {
             message: "the response ended before the provider finished it".to_string(),
             status: None,
         });
     }
-    Ok(assemble(acc, tool_names))
-}
-
-// Apply one SSE line. It fails when the provider sends an error or data it
-// cannot read, or when the caller stopped reading the deltas, which stops the
-// response.
-async fn process_line(
-    line: &[u8],
-    acc: &mut Accumulator,
-    deltas: &mut StreamWriter<ModelDelta>,
-) -> Result<(), ModelError> {
-    let line = String::from_utf8_lossy(line);
-    let line = line.trim();
-    let Some(data) = line.strip_prefix("data:") else {
-        return Ok(());
-    };
-    let data = data.trim();
-    if data.is_empty() || data == "[DONE]" {
-        return Ok(());
-    }
-    if !apply_chunk(chunk_of(data)?, acc, deltas).await {
+    if !acc.refusal.is_empty() {
         return Err(ModelError {
-            message: "the caller stopped reading the response".to_string(),
+            message: format!("the model refused: {}", acc.refusal),
             status: None,
         });
     }
-    Ok(())
+    Ok(assemble(acc))
 }
 
-// The chunk a data line carries. It fails on data that is not a chunk or on an
-// error the provider sent.
+// The chunk in an event's data. Fails on data that isn't a chunk, or on an
+// error chunk. Errors say where the data failed, never what it holds.
 fn chunk_of(data: &str) -> Result<Chunk, ModelError> {
-    let chunk: Chunk = serde_json::from_str(data).map_err(|e| ModelError {
-        message: format!("the provider sent a chunk that is not valid JSON ({e}): {data}"),
-        status: None,
+    let chunk: Chunk = serde_json::from_str(data).map_err(|e| {
+        let what = if e.is_data() {
+            "a chunk that is not valid"
+        } else {
+            "a chunk that is not valid JSON"
+        };
+        ModelError {
+            message: format!("the provider sent {what} ({})", json_error_position(&e)),
+            status: None,
+        }
     })?;
     match &chunk.error {
         Some(error) => Err(ModelError {
-            message: format!("the provider failed the response: {}", error_message(error)),
+            message: error_message(error),
             status: None,
         }),
         None => Ok(chunk),
     }
 }
 
-// The message of an error the provider sent or the error itself if no message.
+// The message for an error chunk: its message, else its type. Nothing else is
+// shown.
 fn error_message(error: &serde_json::Value) -> String {
-    match error.get("message").and_then(serde_json::Value::as_str) {
-        Some(message) => message.to_string(),
-        None => error.to_string(),
+    let text = |key| error.get(key).and_then(serde_json::Value::as_str);
+    match (text("message"), text("type")) {
+        (Some(message), _) => format!("the provider failed the response: {message}"),
+        (None, Some(kind)) => format!("the provider failed the response ({kind})"),
+        (None, None) => "the provider failed the response".to_string(),
     }
 }
 
-// Apply one chunk, returning whether the caller still reads the deltas.
+// Applies one chunk. Fails if the caller stops reading the deltas.
 async fn apply_chunk(
     chunk: Chunk,
     acc: &mut Accumulator,
-    deltas: &mut StreamWriter<ModelDelta>,
-) -> bool {
+    deltas: &mut Deltas,
+) -> Result<(), ModelError> {
     if chunk.id.is_some() {
         acc.response_id = chunk.id;
     }
@@ -740,9 +639,10 @@ async fn apply_chunk(
             && !content.is_empty()
         {
             acc.text.push_str(&content);
-            if deltas.write_one(ModelDelta::Text(content)).await.is_some() {
-                return false;
-            }
+            deltas.write(ModelDelta::Text(content)).await?;
+        }
+        if let Some(refusal) = choice.delta.refusal {
+            acc.refusal.push_str(&refusal);
         }
         for tc in choice.delta.tool_calls {
             let idx = tc.index as usize;
@@ -769,29 +669,21 @@ async fn apply_chunk(
                 name,
                 arguments: args.unwrap_or_default(),
             });
-            if deltas.write_one(delta).await.is_some() {
-                return false;
-            }
+            deltas.write(delta).await?;
         }
     }
-    true
+    Ok(())
 }
 
-fn assemble(acc: Accumulator, tool_names: &ToolNameMap) -> (ModelResponse, Message) {
+fn assemble(acc: Accumulator) -> (ModelResponse, Message) {
     let mut output = Vec::new();
     if !acc.text.is_empty() {
         output.push(ModelOutputItem::Text(acc.text));
     }
     for tc in &acc.tool_calls {
-        // The model echoes back the sanitized name, so restore the original if
-        // necessary.
-        let name = tool_names
-            .get(&tc.name)
-            .cloned()
-            .unwrap_or_else(|| tc.name.clone());
         output.push(ModelOutputItem::ToolCall(ToolCall {
             id: tc.id.clone(),
-            name,
+            name: tc.name.clone(),
             arguments: tc.arguments.clone(),
         }));
     }
@@ -803,11 +695,13 @@ fn assemble(acc: Accumulator, tool_names: &ToolNameMap) -> (ModelResponse, Messa
         usage: token_usage(acc.usage.as_ref()),
         response_id: acc.response_id,
         model: acc.model,
+        // Chat Completions has no opaque state; the output is all a later call
+        // needs.
+        opaque_content: None,
     };
 
-    // History is re-sent to the provider, so its assistant message carries the
-    // tool names as they were sent. Sanitizing an original name gives back the
-    // name the model called.
+    // The assistant message for history, with the tool calls as the model made
+    // them.
     let assistant = output_items_to_message(&response.output);
     (response, assistant)
 }
@@ -859,7 +753,7 @@ fn map_finish_reason(raw: &str) -> ModelFinishReason {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::composable::agents::types::{ModelRequest, ToolResult};
+    use model_client_support::types::{ModelRequest, ToolResult};
     use serde_json::json;
 
     fn exchange(input: Vec<ModelInputItem>, output: Option<Vec<ModelOutputItem>>) -> ModelExchange {
@@ -869,6 +763,7 @@ mod tests {
                 max_tokens: None,
             },
             output,
+            opaque_content: None,
         }
     }
 
@@ -879,14 +774,14 @@ mod tests {
                 vec![ModelInputItem::Text("What's 6 times 7?".into())],
                 Some(vec![ModelOutputItem::ToolCall(ToolCall {
                     id: "call-1".into(),
-                    name: "calc.mul".into(),
+                    name: "calc_mul".into(),
                     arguments: r#"{"a":6,"b":7}"#.into(),
                 })]),
             ),
             exchange(
                 vec![ModelInputItem::ToolResult(ToolResult {
                     tool_call_id: "call-1".into(),
-                    name: "calc.mul".into(),
+                    name: "calc_mul".into(),
                     content: vec![ResultContent::Text("42".into())],
                     is_error: false,
                 })],
@@ -913,6 +808,27 @@ mod tests {
     }
 
     #[test]
+    fn tool_messages_come_before_the_user_turn() {
+        let messages = input_items_to_messages(&[
+            ModelInputItem::Text("Here is the result.".into()),
+            ModelInputItem::ToolResult(ToolResult {
+                tool_call_id: "call-1".into(),
+                name: "get_weather".into(),
+                content: vec![ResultContent::Text("15 degrees".into())],
+                is_error: false,
+            }),
+        ])
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&messages).unwrap(),
+            json!([
+                { "role": "tool", "content": "15 degrees", "tool_call_id": "call-1" },
+                { "role": "user", "content": "Here is the result." },
+            ])
+        );
+    }
+
+    #[test]
     fn a_failed_call_leaves_only_its_input() {
         let history = vec![exchange(vec![ModelInputItem::Text("Hello".into())], None)];
 
@@ -925,7 +841,7 @@ mod tests {
     }
 
     fn png() -> ContentSource {
-        ContentSource::Data(crate::composable::agents::types::MediaData {
+        ContentSource::Data(model_client_support::types::MediaData {
             mime_type: "image/png".into(),
             data: "iVBORw0KGgo=".into(),
         })
@@ -961,9 +877,10 @@ mod tests {
             output_schema: Some(r#"{"type":"object","properties":{"answer":{"type":"integer"}},"required":["answer"],"additionalProperties":false}"#.into()),
             ..settings_with_tools(&[])
         };
-        let body: serde_json::Value =
-            serde_json::from_slice(&build_request("gpt-test", &[], &settings, None).unwrap())
-                .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(
+            &build_request("gpt-test", &[], &settings, MaxTokensField::MaxTokens, None).unwrap(),
+        )
+        .unwrap();
         assert_eq!(
             body["response_format"],
             json!({
@@ -982,7 +899,14 @@ mod tests {
         );
 
         let without: serde_json::Value = serde_json::from_slice(
-            &build_request("gpt-test", &[], &settings_with_tools(&[]), None).unwrap(),
+            &build_request(
+                "gpt-test",
+                &[],
+                &settings_with_tools(&[]),
+                MaxTokensField::MaxTokens,
+                None,
+            )
+            .unwrap(),
         )
         .unwrap();
         assert!(without.get("response_format").is_none());
@@ -991,26 +915,30 @@ mod tests {
             output_schema: Some("{not json".into()),
             ..settings_with_tools(&[])
         };
-        assert!(build_request("gpt-test", &[], &invalid, None).is_err());
+        assert!(build_request("gpt-test", &[], &invalid, MaxTokensField::MaxTokens, None).is_err());
     }
 
     #[test]
-    fn tools_with_colliding_names_fail() {
-        assert!(
-            require_distinct_tool_names(&settings_with_tools(&["calc.add", "calc_mul"])).is_ok()
-        );
-        assert_eq!(
-            require_distinct_tool_names(&settings_with_tools(&["calc.add", "calc_add"]))
-                .unwrap_err()
-                .message,
-            "tools 'calc.add' and 'calc_add' would both be sent as 'calc_add'"
-        );
+    fn the_token_limit_is_sent_in_the_configured_field() {
+        let body = |field| -> serde_json::Value {
+            serde_json::from_slice(
+                &build_request("gpt-test", &[], &settings_with_tools(&[]), field, Some(100))
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let default = body(MaxTokensField::default());
+        assert_eq!(default["max_completion_tokens"], 100);
+        assert!(default.get("max_tokens").is_none());
+        let max_tokens = body(MaxTokensField::MaxTokens);
+        assert_eq!(max_tokens["max_tokens"], 100);
+        assert!(max_tokens.get("max_completion_tokens").is_none());
     }
 
     #[test]
-    fn a_forced_tool_is_named_as_it_was_sent() {
+    fn a_specific_tool_choice_names_the_function() {
         assert_eq!(
-            to_openai_tool_choice(&ToolChoice::Specific("calc.add".into())),
+            to_openai_tool_choice(&ToolChoice::Specific("calc_add".into())),
             json!({ "type": "function", "function": { "name": "calc_add" } })
         );
     }
@@ -1025,7 +953,24 @@ mod tests {
             error.message,
             "the provider failed the response: model overloaded"
         );
-        assert!(chunk_of("{not json").is_err());
+        // Without a message, only the error's type is shown.
+        let error = chunk_of(r#"{"error": {"type": "server_error", "secret": "s3cr3t"}}"#)
+            .err()
+            .unwrap();
+        assert_eq!(
+            error.message,
+            "the provider failed the response (server_error)"
+        );
+
+        // Data that doesn't parse, or isn't a chunk, is never shown.
+        assert_eq!(
+            chunk_of(r#"{"secret": "s3cr3t""#).err().unwrap().message,
+            "the provider sent a chunk that is not valid JSON (line 1, column 19)"
+        );
+        assert_eq!(
+            chunk_of(r#"{"choices": "s3cr3t"}"#).err().unwrap().message,
+            "the provider sent a chunk that is not valid (line 1, column 20)"
+        );
         assert!(chunk_of(r#"{"choices": [{"delta": {"content": "Hi"}}]}"#).is_ok());
     }
 
@@ -1036,10 +981,7 @@ mod tests {
             ..Accumulator::default()
         };
         assert_eq!(
-            complete(unfinished, &ToolNameMap::new())
-                .err()
-                .unwrap()
-                .message,
+            complete(unfinished).err().unwrap().message,
             "the response ended before the provider finished it"
         );
 
@@ -1048,7 +990,29 @@ mod tests {
             finish_reason: Some("stop".into()),
             ..Accumulator::default()
         };
-        assert!(complete(finished, &ToolNameMap::new()).is_ok());
+        assert!(complete(finished).is_ok());
+    }
+
+    #[test]
+    fn a_refusal_fails_the_call() {
+        let chunk = chunk_of(
+            r#"{"choices": [{"delta": {"refusal": "I can't help with that."}, "finish_reason": "stop"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            chunk.choices[0].delta.refusal.as_deref(),
+            Some("I can't help with that.")
+        );
+
+        let refused = Accumulator {
+            refusal: "I can't help with that.".into(),
+            finish_reason: Some("stop".into()),
+            ..Accumulator::default()
+        };
+        assert_eq!(
+            complete(refused).err().unwrap().message,
+            "the model refused: I can't help with that."
+        );
     }
 
     #[test]
@@ -1164,7 +1128,7 @@ mod tests {
 
     #[test]
     fn media_output_in_history_becomes_a_note_between_the_text() {
-        use crate::composable::agents::types::MediaData;
+        use model_client_support::types::MediaData;
 
         let history = vec![exchange(
             vec![ModelInputItem::Text("Draw a cat, then a dog.".into())],
@@ -1191,54 +1155,6 @@ mod tests {
                     And the dog:\n\n\
                     [This turn produced image output (https://example.com/dog.png), which is left out of the history sent to this model.]",
             })
-        );
-    }
-
-    #[test]
-    fn history_needs_a_result_for_every_tool_call() {
-        let call = |id: &str| {
-            ModelOutputItem::ToolCall(ToolCall {
-                id: id.into(),
-                name: "calc.add".into(),
-                arguments: "{}".into(),
-            })
-        };
-        let result = |id: &str| {
-            ModelInputItem::ToolResult(ToolResult {
-                tool_call_id: id.into(),
-                name: "calc.add".into(),
-                content: Vec::new(),
-                is_error: true,
-            })
-        };
-        let question = || vec![ModelInputItem::Text("Add.".into())];
-
-        let answered = vec![
-            exchange(question(), Some(vec![call("1"), call("2")])),
-            exchange(vec![result("1"), result("2")], None),
-        ];
-        assert!(require_answered_tool_calls(&answered).is_ok());
-
-        let unanswered = vec![exchange(question(), Some(vec![call("1")]))];
-        assert_eq!(
-            require_answered_tool_calls(&unanswered)
-                .unwrap_err()
-                .message,
-            "tool call '1' to 'calc.add' has no result in the next exchange"
-        );
-
-        let partly_answered = vec![
-            exchange(question(), Some(vec![call("1"), call("2")])),
-            exchange(
-                vec![result("1")],
-                Some(vec![ModelOutputItem::Text("3".into())]),
-            ),
-        ];
-        assert_eq!(
-            require_answered_tool_calls(&partly_answered)
-                .unwrap_err()
-                .message,
-            "tool call '2' to 'calc.add' has no result in the next exchange"
         );
     }
 }

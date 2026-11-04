@@ -18,6 +18,10 @@ const CHAT_AGENT: &str = "oci://localhost:5001/composable-agents/chat-agent:late
 const CHAT_COMPLETIONS_CLIENT: &str =
     "oci://localhost:5001/composable-agents/chat-completions-client:latest";
 
+/// The model client for Anthropic's Messages API.
+const ANTHROPIC_MESSAGES_CLIENT: &str =
+    "oci://localhost:5001/composable-agents/anthropic-messages-client:latest";
+
 /// The HTTP client every model client imports.
 const HTTP_CLIENT: &str = "oci://ghcr.io/componentized/http/client:0.1.0";
 
@@ -28,11 +32,14 @@ const HTTP_CAPABILITY_NAME: &str = "_http";
 /// The shared random capability agents import for ids.
 const RANDOM_CAPABILITY_NAME: &str = "_random";
 
+/// The shared clocks capability, imported by the Messages API client for retry
+/// waits.
+const CLOCKS_CAPABILITY_NAME: &str = "_clocks";
+
 /// The providers a `[model]` may name.
 const PROVIDERS: [&str; 3] = ["anthropic", "ollama", "openai"];
 
 /// A provider's endpoint, when it differs from the client's default.
-const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com/v1";
 const OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
 
 /// A provider's API key, read from the environment when the config resolves.
@@ -45,6 +52,7 @@ const OPENAI_API_KEY: &str = "${process:env:OPENAI_API_KEY}";
 pub(crate) struct AgentConfigHandler {
     http_emitted: bool,
     random_emitted: bool,
+    clocks_emitted: bool,
 }
 
 impl ConfigHandler for AgentConfigHandler {
@@ -54,7 +62,18 @@ impl ConfigHandler for AgentConfigHandler {
 
     fn claimed_properties(&self) -> HashMap<&str, &[&str]> {
         HashMap::from([
-            ("model", ["provider", "name", "max-tokens"].as_slice()),
+            (
+                "model",
+                [
+                    "provider",
+                    "name",
+                    "max-tokens",
+                    "effort",
+                    "include-reasoning",
+                    "max-retries",
+                ]
+                .as_slice(),
+            ),
             (
                 "agent",
                 ["model", "instructions", "description", "version"].as_slice(),
@@ -89,15 +108,10 @@ impl AgentConfigHandler {
         if let Some(max_tokens) = optional_u32(&context, "max-tokens", properties)? {
             config.insert("max-tokens".to_string(), json!(max_tokens));
         }
-        // Each provider specifies the client for its API, and the default
-        // endpoint and API key required by that client. The chat completions
-        // client defaults to OpenAI's endpoint.
+        // Each provider's client, base URL (None for the client's default) and
+        // API key.
         let (uri, base_url, api_key) = match provider.as_str() {
-            "anthropic" => (
-                CHAT_COMPLETIONS_CLIENT,
-                Some(ANTHROPIC_BASE_URL),
-                Some(ANTHROPIC_API_KEY),
-            ),
+            "anthropic" => (ANTHROPIC_MESSAGES_CLIENT, None, Some(ANTHROPIC_API_KEY)),
             "ollama" => (CHAT_COMPLETIONS_CLIENT, Some(OLLAMA_BASE_URL), None),
             "openai" => (CHAT_COMPLETIONS_CLIENT, None, Some(OPENAI_API_KEY)),
             other => bail!(
@@ -105,22 +119,62 @@ impl AgentConfigHandler {
                 PROVIDERS.join(", ")
             ),
         };
+        // `effort`, `include-reasoning` and `max-retries` are Messages API client
+        // settings, rejected for other providers. The client checks `effort`'s
+        // value when a session starts.
+        let messages_api = uri == ANTHROPIC_MESSAGES_CLIENT;
+        if let Some(effort) = optional_string(&context, "effort", properties)? {
+            if !messages_api {
+                bail!(
+                    "{context}: 'effort' is only supported for provider 'anthropic', not '{provider}'"
+                );
+            }
+            config.insert("effort".to_string(), json!(effort));
+        }
+        if let Some(include_reasoning) = optional_bool(&context, "include-reasoning", properties)? {
+            if !messages_api {
+                bail!(
+                    "{context}: 'include-reasoning' is only supported for provider 'anthropic', not '{provider}'"
+                );
+            }
+            config.insert("include-reasoning".to_string(), json!(include_reasoning));
+        }
+        if let Some(max_retries) = optional_u32(&context, "max-retries", properties)? {
+            if !messages_api {
+                bail!(
+                    "{context}: 'max-retries' is only supported for provider 'anthropic', not '{provider}'"
+                );
+            }
+            config.insert("max-retries".to_string(), json!(max_retries));
+        }
         if let Some(base_url) = base_url {
             config.insert("base-url".to_string(), json!(base_url));
         }
         if let Some(api_key) = api_key {
             config.insert("api-key".to_string(), json!(api_key));
         }
+        // Ollama reads only `max_tokens`.
+        if provider == "ollama" {
+            config.insert("max-tokens-field".to_string(), json!("max_tokens"));
+        }
 
+        // Only the Messages API client imports a clock.
+        let mut imports = vec![HTTP_CLIENT_NAME];
+        if messages_api {
+            imports.push(CLOCKS_CAPABILITY_NAME);
+        }
         let mut definitions = vec![component(
             name,
             json!({
                 "uri": uri,
-                "imports": [HTTP_CLIENT_NAME],
+                "imports": imports,
                 "config": config,
             }),
         )];
         definitions.extend(self.http_wiring());
+        if messages_api {
+            definitions.extend(self.clocks_wiring());
+        }
         Ok(definitions)
     }
 
@@ -165,6 +219,19 @@ impl AgentConfigHandler {
         )]
     }
 
+    // The shared clocks capability, unless already emitted.
+    fn clocks_wiring(&mut self) -> Vec<Definition> {
+        if self.clocks_emitted {
+            return Vec::new();
+        }
+        self.clocks_emitted = true;
+        vec![generic(
+            "capability",
+            CLOCKS_CAPABILITY_NAME,
+            json!({ "type": "wasi:clocks" }),
+        )]
+    }
+
     // The shared HTTP client and its capability, unless already emitted.
     fn http_wiring(&mut self) -> Vec<Definition> {
         if self.http_emitted {
@@ -198,6 +265,14 @@ fn optional_string(
     match properties.remove(key) {
         Some(Value::String(value)) => Ok(Some(value)),
         Some(got) => bail!("{context}: '{key}' must be a string, got {got}"),
+        None => Ok(None),
+    }
+}
+
+fn optional_bool(context: &str, key: &str, properties: &mut PropertyMap) -> Result<Option<bool>> {
+    match properties.remove(key) {
+        Some(Value::Bool(value)) => Ok(Some(value)),
+        Some(got) => bail!("{context}: '{key}' must be true or false, got {got}"),
         None => Ok(None),
     }
 }
@@ -286,6 +361,7 @@ mod tests {
                     "provider": "ollama",
                     "max-tokens": 1024,
                     "base-url": OLLAMA_BASE_URL,
+                    "max-tokens-field": "max_tokens",
                 },
             })
         );
@@ -344,31 +420,117 @@ mod tests {
     }
 
     #[test]
-    fn an_anthropic_model_uses_its_chat_completions_endpoint() {
+    fn an_anthropic_model_builds_a_messages_api_client() {
         let mut handler = AgentConfigHandler::default();
         let produced = produced(
             handler
                 .handle_definition(definition(
                     "model",
                     "claude",
-                    json!({ "provider": "anthropic", "name": "claude-test", "max-tokens": 8192 }),
+                    json!({
+                        "provider": "anthropic",
+                        "name": "claude-test",
+                        "max-tokens": 8192,
+                        "effort": "low",
+                        "include-reasoning": true,
+                        "max-retries": 4,
+                    }),
                 ))
                 .unwrap(),
         );
         assert_eq!(
             produced[&key("component", "claude")],
             json!({
-                "uri": CHAT_COMPLETIONS_CLIENT,
-                "imports": ["_http-client"],
+                "uri": ANTHROPIC_MESSAGES_CLIENT,
+                "imports": ["_http-client", "_clocks"],
                 "config": {
                     "model": "claude-test",
                     "provider": "anthropic",
                     "max-tokens": 8192,
-                    "base-url": ANTHROPIC_BASE_URL,
+                    "effort": "low",
+                    "include-reasoning": true,
+                    "max-retries": 4,
                     "api-key": ANTHROPIC_API_KEY,
                 },
             })
         );
+        assert_eq!(
+            produced[&key("capability", "_clocks")],
+            json!({ "type": "wasi:clocks" })
+        );
+    }
+
+    #[test]
+    fn only_a_messages_api_model_imports_the_clocks_capability_emitted_once() {
+        let mut handler = AgentConfigHandler::default();
+        let local = produced(
+            handler
+                .handle_definition(definition(
+                    "model",
+                    "local",
+                    json!({ "provider": "ollama", "name": "gpt-oss:20b" }),
+                ))
+                .unwrap(),
+        );
+        assert_eq!(
+            local[&key("component", "local")]["imports"],
+            json!(["_http-client"])
+        );
+        assert!(!local.contains_key(&key("capability", "_clocks")));
+
+        let first = produced(
+            handler
+                .handle_definition(definition(
+                    "model",
+                    "claude",
+                    json!({ "provider": "anthropic", "name": "claude-test" }),
+                ))
+                .unwrap(),
+        );
+        assert!(first.contains_key(&key("capability", "_clocks")));
+        let second = produced(
+            handler
+                .handle_definition(definition(
+                    "model",
+                    "claude-2",
+                    json!({ "provider": "anthropic", "name": "claude-test" }),
+                ))
+                .unwrap(),
+        );
+        assert_eq!(
+            second.keys().collect::<Vec<_>>(),
+            [&key("component", "claude-2")]
+        );
+        assert_eq!(
+            second[&key("component", "claude-2")]["imports"],
+            json!(["_http-client", "_clocks"])
+        );
+    }
+
+    #[test]
+    fn messages_api_settings_are_rejected_for_a_model_without_that_client() {
+        for property in ["effort", "include-reasoning", "max-retries"] {
+            for provider in ["ollama", "openai"] {
+                let value = match property {
+                    "effort" => json!("low"),
+                    "include-reasoning" => json!(true),
+                    _ => json!(3),
+                };
+                let mut properties = json!({ "provider": provider, "name": "m" });
+                properties[property] = value;
+                let mut handler = AgentConfigHandler::default();
+                let error = handler
+                    .handle_definition(definition("model", "other", properties))
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    error.contains(&format!(
+                        "'{property}' is only supported for provider 'anthropic', not '{provider}'"
+                    )),
+                    "{error}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -1,0 +1,11 @@
+[model.claude]
+provider = "anthropic"
+name = "claude-haiku-5-5"
+effort = "high"
+include-reasoning = true
+
+[agent.assistant]
+model = "claude"
+description = "Answers questions concisely"
+version = "0.1.0"
+instructions = "Answer in one or two sentences."

@@ -239,15 +239,19 @@ fn part_text(part: Part) -> String {
     }
 }
 
-// A status's state, then the text of its message, if any.
+// A status's state and its message text, without trailing whitespace. A
+// reasoning message is shown as `reasoning: <text>`.
 fn status_line(status: &TaskStatus) -> String {
     let state = state_name(status.state);
-    let text = status
+    let message_text = status
         .message
         .as_ref()
         .map(message_text)
         .unwrap_or_default();
-    if text.is_empty() {
+    let text = message_text.trim_end();
+    if status.message.as_ref().is_some_and(is_reasoning) && !text.is_empty() {
+        format!("reasoning: {text}")
+    } else if text.is_empty() {
         format!("status: {state}")
     } else {
         format!("status: {state}: {text}")
@@ -279,6 +283,17 @@ fn message_text(message: &Message) -> String {
             _ => None,
         })
         .collect()
+}
+
+// Whether a message is reasoning, a part with `"reasoning": true` in its
+// metadata.
+fn is_reasoning(message: &Message) -> bool {
+    message.parts.iter().any(|part| {
+        part.metadata
+            .as_deref()
+            .and_then(|metadata| serde_json::from_str::<serde_json::Value>(metadata).ok())
+            .is_some_and(|metadata| metadata["reasoning"] == true)
+    })
 }
 
 // The WIT case name of a finish reason, with the provider's raw value for a
@@ -463,6 +478,18 @@ mod tests {
             status_line(&status(TaskState::Failed, Some("the model call failed"))),
             "status: failed: the model call failed"
         );
+    }
+
+    #[test]
+    fn a_status_message_marked_as_reasoning_is_shown_as_reasoning() {
+        let mut working = status(TaskState::Working, Some("Add them.\n\n"));
+        working.message.as_mut().unwrap().parts[0].metadata =
+            Some(r#"{"reasoning":true}"#.to_string());
+        assert_eq!(status_line(&working), "reasoning: Add them.");
+
+        working.message.as_mut().unwrap().parts[0].metadata =
+            Some(r#"{"reasoning":false}"#.to_string());
+        assert_eq!(status_line(&working), "status: working: Add them.");
     }
 
     #[test]

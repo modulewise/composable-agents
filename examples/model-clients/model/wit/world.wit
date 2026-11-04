@@ -1,4 +1,4 @@
-package composable-agents:chat-completions-example@0.1.0;
+package composable-agents:model-clients-example@0.1.0;
 
 world model {
     import composable:agents/model-client@0.1.0;
