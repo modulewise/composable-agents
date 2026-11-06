@@ -1,0 +1,3 @@
+[overrides]
+"composable:agents" = { path = "../wit" }
+"composable:tools" = { path = "./wit/overrides/composable-tools" }

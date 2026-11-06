@@ -1,0 +1,25 @@
+[toolset.tools]
+tools = ["add", "subtract", "multiply", "divide"]
+
+[tool.add]
+target = "calculator"
+function = "add"
+description = "Add a plus b"
+
+[tool.subtract]
+target = "calculator"
+function = "subtract"
+description = "Subtract b from a"
+
+[tool.multiply]
+target = "calculator"
+function = "multiply"
+description = "Multiply a times b"
+
+[tool.divide]
+target = "calculator"
+function = "divide"
+description = "Divide a by b"
+
+[component.calculator]
+uri = "calculator.wasm"

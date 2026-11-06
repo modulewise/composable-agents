@@ -1,0 +1,3 @@
+[model.model]
+provider = "ollama"
+name = "gemma4:31b"

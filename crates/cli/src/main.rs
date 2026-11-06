@@ -13,6 +13,7 @@ use composable_agents::types::{
 use composable_agents::{AgentHost, AgentService};
 use composable_otel::OtelService;
 use composable_runtime::Runtime;
+use composable_tools::ToolService;
 
 #[derive(Parser)]
 #[command(name = "agents")]
@@ -64,6 +65,7 @@ async fn main() -> Result<ExitCode> {
     let runtime = Runtime::builder()
         .from_paths(definitions)
         .with_service::<OtelService>()
+        .with_service::<ToolService>()
         .with_service::<AgentService>()
         .build()
         .await?;

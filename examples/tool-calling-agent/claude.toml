@@ -1,0 +1,5 @@
+[model.model]
+provider = "anthropic"
+name = "claude-haiku-5-5"
+effort = "high"
+include-reasoning = true

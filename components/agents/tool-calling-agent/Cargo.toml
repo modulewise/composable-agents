@@ -1,0 +1,12 @@
+[package]
+name = "tool-calling-agent"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+agent-support = { path = "../agent-support" }
+futures = { version = "0.3", default-features = false }
+wit-bindgen = { workspace = true, features = ["async-spawn", "futures-stream"] }

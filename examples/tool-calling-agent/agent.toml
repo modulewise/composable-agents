@@ -1,0 +1,7 @@
+[agent.assistant]
+model = "model"
+toolset = "tools"
+description = "Answers arithmetic questions with calculator tools"
+version = "0.1.0"
+instructions = "Use the calculator tools for every arithmetic step. Answer in one sentence."
+report-tool-calls = true
