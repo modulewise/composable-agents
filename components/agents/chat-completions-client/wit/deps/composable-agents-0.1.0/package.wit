@@ -126,18 +126,12 @@ interface types {
     arguments: json,
   }
 
-  /// A reasoning/extended-thinking block produced by the model. If not
-  /// redacted, `text` is the human-readable content. The `opaque-content`
-  /// maps to a provider-specific value (e.g. OpenAI `encrypted_content`,
-  /// Gemini thought signature, Anthropic signature). A session sends the
-  /// reasoning of earlier outputs back to providers that require it,
-  /// `opaque-content` unchanged.
+  /// The model's reasoning. Any provider state needed to replay it is in the
+  /// response's `opaque-content`.
   record reasoning {
-    /// Human-readable reasoning text or summary. Empty if redacted.
+    /// Human-readable reasoning text or summary. Empty if redacted or not
+    /// returned.
     text: string,
-    /// Provider-defined reasoning state, as an opaque base64 string, to be
-    /// returned unchanged to continue reasoning in a later call.
-    opaque-content: option<string>,
     /// True when the reasoning text was deliberately withheld.
     redacted: bool,
   }
@@ -198,6 +192,16 @@ interface types {
     other(string),
   }
 
+  /// A response's output in its API's own form, for a later call to the
+  /// same API to send back unchanged. Only a client of that API reads it;
+  /// others keep it as is.
+  record opaque-content {
+    /// The API that `content` belongs to, e.g. "anthropic-messages".
+    api: string,
+    /// The output in that API's form.
+    content: string,
+  }
+
   /// The final result of a call, resolved after the delta stream completes.
   record model-response {
     output: list<model-output-item>,
@@ -207,6 +211,8 @@ interface types {
     response-id: option<string>,
     /// Actual model that produced the response, if reported.
     model: option<string>,
+    /// The output in its API's own form, from a client that keeps it.
+    opaque-content: option<opaque-content>,
   }
 
   record model-error {
@@ -232,6 +238,9 @@ interface types {
     /// The response's output, or `none` when the call failed, was
     /// canceled, or dropped.
     output: option<list<model-output-item>>,
+    /// The output in its API's own form, if the client kept it. Keep it
+    /// with the history; a client of another API uses `output` instead.
+    opaque-content: option<opaque-content>,
   }
 
   /// === Agent content and task types (mirrors A2A types) ===================
@@ -469,8 +478,9 @@ interface types {
 
   /// An update to the task.
   variant agent-event {
-    /// The task's status changed to indicate progress or a message for the
-    /// caller.
+    /// The task's status changed, with progress or a message for the
+    /// caller. A `working` status message whose part has
+    /// `{"reasoning": true}` in its metadata is the model's reasoning.
     status(task-status-update-event),
     /// Content for an artifact.
     artifact(task-artifact-update-event),

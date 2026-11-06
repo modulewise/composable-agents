@@ -24,6 +24,9 @@ name = "gpt-oss:20b"
 | `provider` | yes | `anthropic`, `ollama` or `openai` (more to come) |
 | `name` | yes | the provider's model name |
 | `max-tokens` | no | the default limit on output tokens per call, overridden by the agent's settings or request |
+| `effort` | no | `anthropic` only: `low`, `medium`, `high`, `xhigh` or `max`, how much effort the model uses on a response |
+| `include-reasoning` | no | `anthropic` only: `true` to include a summary of the model's reasoning in the response (default `false`) |
+| `max-retries` | no | `anthropic` only: how many times a request may be resent after failure (default 2) |
 
 ### `[agent]`
 

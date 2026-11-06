@@ -1,9 +1,9 @@
-[model.local]
-provider = "ollama"
-name = "gpt-oss:20b"
+[model.gpt]
+provider = "openai"
+name = "gpt-5.4-mini"
 
 [agent.assistant]
-model = "local"
+model = "gpt"
 description = "Answers questions concisely"
 version = "0.1.0"
 instructions = "Answer in one or two sentences."

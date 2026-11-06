@@ -44,12 +44,17 @@ History follows four rules:
   cannot send. In history, such input and any media the API cannot carry are
   replaced by a note so that a conversation can continue on any client.
 
+Tool names have any `.` replaced with `_` when passed between the client and
+the model, since not every API supports `.`. Any tool names that would collide
+(e.g. `a.b` and `a_b`) will fail. Any tool name longer than 128 characters will
+also fail.
+
 ## chat-completions-client
 
 Implements `model-client` for the Chat Completions API, served by OpenAI,
 Ollama and other providers. It takes text and images (as `image_url` parts),
 and fails on audio, video, and documents. It maps `output-schema` to a strict
-JSON Schema `response_format`. Its config:
+JSON Schema `response_format`.
 
 | Key | |
 |---|---|
@@ -58,8 +63,35 @@ JSON Schema `response_format`. Its config:
 | `base-url` | default: `https://api.openai.com/v1` (set one for different providers) |
 | `api-key` | optional: sent as a bearer token when set (most hosted providers require one) |
 | `max-tokens` | optional default, overridden by `model-settings` and the request |
+| `max-tokens-field` | default: `max_completion_tokens`; `max_tokens` for providers that still use it (such as Ollama) |
 
-Example: [`examples/chat-completions`](../../examples/chat-completions)
+## anthropic-messages-client
+
+Implements `model-client` for Anthropic's Messages API (version `2026-10-21`).
+It accepts text, images, and PDF or text documents, but fails on audio, video,
+or other documents. It maps `output-schema` to a JSON Schema
+`output_config.format`.
+
+Each response is kept in `opaque-content` as sent by the API, and a later
+session replays it exactly, so the model's thinking remains valid throughout
+the conversation.
+
+A request is retried on a 5xx, on a 429 with a `retry-after` header, or when it
+fails to send. It waits `retry-after` seconds if provided, otherwise it backs
+off exponentially (0.5s doubling up to 8s).
+
+| Key | |
+|---|---|
+| `model` | required |
+| `provider` | required: the provider name each call reports |
+| `base-url` | default: `https://api.anthropic.com/v1` |
+| `api-key` | optional: sent as a bearer token when set |
+| `max-tokens` | default: 64000, overridden by `model-settings` and the request |
+| `effort` | optional: `low`, `medium`, `high`, `xhigh` or `max`, sent as `output_config.effort` |
+| `include-reasoning` | default: `false`; `true` asks for adaptive thinking with a summary in each response |
+| `max-retries` | default: 2; how many times a failed request may be resent |
+
+It imports `wasi:clocks/monotonic-clock` for any waits between retries.
 
 > [!NOTE]
 >
@@ -67,6 +99,8 @@ Example: [`examples/chat-completions`](../../examples/chat-completions)
 > generated config component. That will change once secret management support
 > is available (on the roadmap). This project is still in an early development
 > phase, not yet intended for any "real world" usage.
+
+Example: [`examples/model-clients`](../../examples/model-clients)
 
 ## agent
 
@@ -95,10 +129,11 @@ document input by media type, which the client may refuse. It does not enforce
 token budgets yet, so it refuses any request that includes one.
 
 The task streams a `working` status, then the model's text as the chunks of one
-artifact, with the last chunk marked. Reasoning is left out. Dropping the event
-stream cancels the task and its model call. If the call fails, the task fails
-with the error as its status message, and any text already streamed remains its
-artifact. Its config:
+artifact, with the last chunk marked. Each run of the model's reasoning, when
+the client returns it, is sent as one `working` status message whose part has
+`{"reasoning": true}` in its metadata. Dropping the event stream cancels the
+task and its model call. If the call fails, the task fails with the error as
+its status message, and any text already streamed remains as its artifact.
 
 | Key | |
 |---|---|

@@ -29,6 +29,9 @@ const TEXT_PLAIN: &str = "text/plain";
 // The default media type for file bytes.
 const OCTET_STREAM: &str = "application/octet-stream";
 
+// Part metadata that marks a status message as the model's reasoning.
+const REASONING_METADATA: &str = r#"{"reasoning":true}"#;
+
 // JSON-RPC error codes used by this agent.
 const INVALID_PARAMS: i32 = -32602;
 const INTERNAL_ERROR: i32 = -32603;
@@ -130,9 +133,9 @@ struct TaskIds {
     context_id: String,
 }
 
-// The task as one call to the model, streamed with a `working` status and the
-// chunks of one artifact, then its outcome. A dropped event stream cancels the
-// task.
+// Runs the task as one model call. Streams a `working` status, each run of
+// reasoning as a `working` status message, and the text as chunks of one
+// artifact, then returns the outcome. A dropped event stream cancels the task.
 async fn run(
     session: Session,
     input: Vec<ModelInputItem>,
@@ -160,16 +163,24 @@ async fn run(
         Err(e) => return failed(ids, &e.message, artifact, session.exchanges()),
     };
 
+    let mut reasoning = ReasoningRun::default();
     let mut streamed_text = false;
     let mut deltas = stream.deltas.into_stream();
     while let Some(delta) = deltas.next().await {
-        let ModelDelta::Text(chunk) = delta else {
-            continue;
+        // A run of reasoning ends at the next delta of another kind.
+        let ready: Vec<AgentEvent> = match delta {
+            ModelDelta::Reasoning(chunk) => {
+                reasoning.push(chunk);
+                Vec::new()
+            }
+            ModelDelta::Text(chunk) => {
+                streamed_text = true;
+                let ended = reasoning.finish(ids);
+                ended.into_iter().chain(artifact.push(chunk, ids)).collect()
+            }
+            ModelDelta::ToolCall(_) => reasoning.finish(ids).into_iter().collect(),
         };
-        streamed_text = true;
-        if let Some(event) = artifact.push(chunk, ids)
-            && !send(&mut events, event).await
-        {
+        if !send_all(&mut events, ready).await {
             drop(deltas);
             return outcome(
                 TaskState::Canceled,
@@ -179,6 +190,16 @@ async fn run(
                 None,
             );
         }
+    }
+    // A run of reasoning also ends with the stream.
+    if !send_all(&mut events, reasoning.finish(ids).into_iter().collect()).await {
+        return outcome(
+            TaskState::Canceled,
+            artifact,
+            session.exchanges(),
+            unreported(1),
+            None,
+        );
     }
 
     let response = match stream.result.await {
@@ -193,6 +214,23 @@ async fn run(
     };
     let usage = response.usage;
     let reason = Some(AgentFinishReason::Model(response.finish_reason));
+    // If no reasoning deltas were streamed, send each run of reasoning in the
+    // output as a status message, before the text.
+    if !reasoning.streamed {
+        let runs = reasoning_runs(&response.output)
+            .into_iter()
+            .map(|text| reasoning_event(ids, text))
+            .collect();
+        if !send_all(&mut events, runs).await {
+            return outcome(
+                TaskState::Canceled,
+                artifact,
+                session.exchanges(),
+                usage,
+                reason,
+            );
+        }
+    }
     // A response that streamed no text deltas sends its whole text as one
     // chunk.
     if !streamed_text
@@ -312,6 +350,65 @@ impl TextArtifact {
     }
 }
 
+// Reasoning deltas collected since the last reasoning message was sent.
+#[derive(Default)]
+struct ReasoningRun {
+    text: String,
+    // Whether any reasoning delta arrived.
+    streamed: bool,
+}
+
+impl ReasoningRun {
+    fn push(&mut self, chunk: String) {
+        self.streamed = true;
+        self.text.push_str(&chunk);
+    }
+
+    // Takes the collected text, if any.
+    fn take(&mut self) -> Option<String> {
+        let text = std::mem::take(&mut self.text);
+        (!text.is_empty()).then_some(text)
+    }
+
+    // A status event with the collected text, if any.
+    fn finish(&mut self, ids: &TaskIds) -> Option<AgentEvent> {
+        self.take().map(|text| reasoning_event(ids, text))
+    }
+}
+
+// The joined text of each run of consecutive reasoning items, skipping runs
+// without text (such as redacted reasoning).
+fn reasoning_runs(output: &[ModelOutputItem]) -> Vec<String> {
+    let mut runs = vec![String::new()];
+    for item in output {
+        match item {
+            ModelOutputItem::Reasoning(reasoning) => {
+                runs.last_mut().unwrap().push_str(&reasoning.text);
+            }
+            _ => runs.push(String::new()),
+        }
+    }
+    runs.retain(|text| !text.is_empty());
+    runs
+}
+
+// A `working` status with the model's reasoning as its message.
+fn reasoning_event(ids: &TaskIds, text: String) -> AgentEvent {
+    let message = Message {
+        parts: vec![reasoning_part(text)],
+        ..agent_message(ids, String::new())
+    };
+    status_event(ids, TaskState::Working, Some(message))
+}
+
+// The model's reasoning as a text part marked by `REASONING_METADATA`.
+fn reasoning_part(text: String) -> Part {
+    Part {
+        metadata: Some(REASONING_METADATA.to_string()),
+        ..text_part(text)
+    }
+}
+
 // The outcome of a task that ended in `state`. Includes its artifact as sent,
 // the exchanges its model call made, the usage it reported, and the finish
 // reason if the call produced a response.
@@ -373,6 +470,16 @@ fn status_event(ids: &TaskIds, state: TaskState, message: Option<Message>) -> Ag
 // Send an event, returning whether the caller still reads the stream.
 async fn send(events: &mut StreamWriter<AgentEvent>, event: AgentEvent) -> bool {
     events.write_one(event).await.is_none()
+}
+
+// Send events in order, returning whether the caller still reads the stream.
+async fn send_all(events: &mut StreamWriter<AgentEvent>, ready: Vec<AgentEvent>) -> bool {
+    for event in ready {
+        if !send(events, event).await {
+            return false;
+        }
+    }
+    true
 }
 
 fn agent_message(ids: &TaskIds, text: String) -> Message {
@@ -599,12 +706,57 @@ mod tests {
         assert_eq!(format!("{input:?}"), format!("{expected:?}"));
     }
 
+    fn reasoning(text: &str, redacted: bool) -> ModelOutputItem {
+        ModelOutputItem::Reasoning(composable::agents::types::Reasoning {
+            text: text.to_string(),
+            redacted,
+        })
+    }
+
+    #[test]
+    fn a_run_of_reasoning_joins_its_deltas_until_it_ends() {
+        let mut run = ReasoningRun::default();
+        assert!(run.take().is_none());
+        assert!(!run.streamed);
+
+        run.push("Add ".to_string());
+        run.push("them.".to_string());
+        assert_eq!(run.take().as_deref(), Some("Add them."));
+
+        // The next run starts empty, and reasoning still counts as streamed.
+        assert!(run.take().is_none());
+        assert!(run.streamed);
+    }
+
+    #[test]
+    fn reasoning_is_a_text_part_marked_in_its_metadata() {
+        let part = reasoning_part("Add them.".to_string());
+        assert!(matches!(&part.content, PartContent::Text(text) if text == "Add them."));
+        assert_eq!(part.metadata.as_deref(), Some(r#"{"reasoning":true}"#));
+    }
+
+    #[test]
+    fn reasoning_runs_join_consecutive_items_and_skip_those_without_text() {
+        let output = [
+            reasoning("First ", false),
+            reasoning("thought.", false),
+            ModelOutputItem::Text("Hi".to_string()),
+            reasoning("", true),
+            ModelOutputItem::Text("!".to_string()),
+            reasoning("Second.", false),
+        ];
+        assert_eq!(
+            reasoning_runs(&output),
+            ["First thought.".to_string(), "Second.".to_string()]
+        );
+        assert!(reasoning_runs(&[ModelOutputItem::Text("Hi".to_string())]).is_empty());
+    }
+
     #[test]
     fn response_text_joins_the_text_items() {
         let output = [
             ModelOutputItem::Reasoning(composable::agents::types::Reasoning {
                 text: "Think.".to_string(),
-                opaque_content: None,
                 redacted: false,
             }),
             ModelOutputItem::Text("Hello".to_string()),

@@ -1,0 +1,21 @@
+[component.model]
+uri = "./lib/model.wasm"
+imports = ["model-client"]
+
+[component.model-client]
+uri = "../../components/lib/anthropic-messages-client.wasm"
+imports = ["http-client", "clocks"]
+config.provider = "anthropic"
+config.model = "claude-haiku-5-5"
+config.effort = "low"
+config.api-key = "${process:env:ANTHROPIC_API_KEY}"
+
+[component.http-client]
+uri = "oci://ghcr.io/componentized/http/client:0.1.0"
+imports = ["http"]
+
+[capability.http]
+type = "wasi:http"
+
+[capability.clocks]
+type = "wasi:clocks"

@@ -1,6 +1,6 @@
-//! Calls a model through `composable:agents/model-client`. For each `chat`
-//! invocation, it creates a session with the output schema (if any), passes a
-//! request with the prompt, and returns the model response as text.
+//! Calls a model through `composable:agents/model-client`. Each `chat`
+//! creates a session with the output schema, if any, sends the prompt, and
+//! returns the response text.
 
 wit_bindgen::generate!({
     path: "wit",
@@ -34,8 +34,8 @@ impl Guest for Model {
         };
         let stream = session.call(request).await.map_err(|e| e.message)?;
 
-        // The deltas stream the reply as the model generates it. Reading them
-        // to their end allows the call to finish. Dropping would cancel it.
+        // Read the deltas to the end so the call can finish. Dropping them
+        // cancels the call.
         stream.deltas.collect().await;
         let response = stream.result.await.map_err(|e| e.message)?;
         Ok(response
