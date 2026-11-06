@@ -77,10 +77,35 @@ fn an_agent_rejects_a_property_it_does_not_claim() {
         model = "local"
         description = "Helps"
         version = "0.1.0"
-        toolset = "tools"
+        temperature = 0.5
         "#,
     )
     .expect_err("an unknown property")
     .to_string();
-    assert!(error.contains("unknown property 'toolset'"), "{error}");
+    assert!(error.contains("unknown property 'temperature'"), "{error}");
+}
+
+#[test]
+fn a_tool_calling_agent_imports_its_toolset() -> Result<()> {
+    let graph = graph(
+        "toolset",
+        r#"
+        [model.local]
+        provider = "ollama"
+        name = "gpt-oss:20b"
+
+        [component.tools]
+        uri = "oci://localhost:5001/example/tools:latest"
+
+        [agent.helper]
+        model = "local"
+        toolset = "tools"
+        description = "Helps"
+        version = "0.1.0"
+        "#,
+    )?;
+    let (components, capabilities) = names(&graph);
+    assert_eq!(components, ["_http-client", "helper", "local", "tools"]);
+    assert_eq!(capabilities, ["_http", "_random"]);
+    Ok(())
 }

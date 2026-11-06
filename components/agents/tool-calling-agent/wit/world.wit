@@ -1,0 +1,12 @@
+package composable-agents:tool-calling-agent@0.1.0;
+
+/// An agent that calls its model in a loop, running the tools the model
+/// requests from its toolset and sending their results back to the model,
+/// until the model finishes or the agent reaches its turn limit.
+world tool-calling-agent {
+    include composable:agents/base-agent@0.1.0;
+
+    import wasi:config/store@0.2.0-rc.1;
+    import wasi:random/random@0.3.0;
+    import composable:tools/toolset@0.2.0;
+}

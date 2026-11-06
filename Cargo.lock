@@ -402,6 +402,7 @@ dependencies = [
  "composable-agents",
  "composable-otel",
  "composable-runtime",
+ "composable-tools",
  "rustls",
  "serde_json",
  "tokio",
@@ -480,6 +481,16 @@ dependencies = [
  "wasmtime-wasi-io",
  "wit-component 0.263.0",
  "wit-parser 0.263.0",
+]
+
+[[package]]
+name = "composable-tools"
+version = "0.5.0-alpha.5"
+source = "git+https://github.com/modulewise/composable-tools?branch=main#c8ad75b06b7a2dddef8a174404baae44d028c70f"
+dependencies = [
+ "anyhow",
+ "composable-runtime",
+ "serde_json",
 ]
 
 [[package]]
@@ -2911,9 +2922,9 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "smallvec"
-version = "1.16.4"
+version = "1.16.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0d5d4b1981b8bbbb7aed204cae5726d683d5d6ac7e74ec54122ea28f315e7c8"
+checksum = "149309498a5f7334b12ddae0cad8aba81ce785fe91755068867e017cf98fee46"
 dependencies = [
  "serde",
 ]

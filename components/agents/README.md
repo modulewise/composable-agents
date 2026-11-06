@@ -141,3 +141,33 @@ its status message, and any text already streamed remains as its artifact.
 | `description` | required: the agent's description, also used for its one skill |
 | `version` | required: the agent's version in its metadata |
 | `instructions` | optional: the model's instructions (`model-settings.instructions`) |
+
+## tool-calling-agent
+
+Implements `agent` with calls to a `model-client` in a loop. It imports a
+`composable:tools` `toolset`, so it can be composed with any local and/or
+remote tools. It shares the tools' metadata with the model, runs tools as
+requested by the model, and sends their results back to the model. The task
+completes when a model response requests no more tool calls. It fails at the
+turn limit, or if a response's finish reason is a tool request but its output
+includes no tool calls.
+
+The task streams a `working` status before each model call, and reasoning and
+text as in chat-agent, with the text of every call in one artifact. Dropping
+the event stream cancels the task at its next event.
+
+A tool's text, images, audio, resource links, and embedded blobs pass to the
+model client, which replaces any it can't send with a note. A tool call that
+fails returns its error to the model as an error result. If the task ends
+before sending a response's tool results, its added history includes them, with
+an error result for each tool that didn't run, so every tool call in the
+history is answered.
+
+| Key | |
+|---|---|
+| `name` | required: the agent's name in its metadata |
+| `description` | required: the agent's description, also used for its one skill |
+| `version` | required: the agent's version in its metadata |
+| `instructions` | optional: the model's instructions (`model-settings.instructions`) |
+| `max-turns` | default: 8; the most model calls allowed per invocation |
+| `report-tool-calls` | default: `false`; whether to emit called tool names in status messages |

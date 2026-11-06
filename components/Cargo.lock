@@ -3,6 +3,14 @@
 version = 4
 
 [[package]]
+name = "agent-support"
+version = "0.1.0"
+dependencies = [
+ "uuid",
+ "wit-bindgen",
+]
+
+[[package]]
 name = "anthropic-messages-client"
 version = "0.1.0"
 dependencies = [
@@ -35,8 +43,8 @@ checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
 name = "chat-agent"
 version = "0.1.0"
 dependencies = [
+ "agent-support",
  "futures",
- "uuid",
  "wit-bindgen",
 ]
 
@@ -299,6 +307,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "tool-calling-agent"
+version = "0.1.0"
+dependencies = [
+ "agent-support",
+ "futures",
+ "wit-bindgen",
 ]
 
 [[package]]

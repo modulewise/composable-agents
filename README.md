@@ -6,6 +6,11 @@ Agents and model clients as Wasm components that run on
 [composable-runtime](https://github.com/modulewise/composable-runtime).
 The WIT they implement is in [components/agents](components/agents).
 
+## Examples
+
+- [examples/chat-agent](examples/chat-agent)
+- [examples/tool-calling-agent](examples/tool-calling-agent)
+
 ## Config
 
 `AgentService` handles `[model]` and `[agent]` definitions. Each becomes a
@@ -44,6 +49,12 @@ instructions = "Answer in one or two sentences."
 | `description` | yes | the agent's description, in its metadata |
 | `version` | yes | the agent's version, in its metadata |
 | `instructions` | no | the model's system instructions |
+| `toolset` | no | the name of a component exporting `composable:tools/toolset`, such as a `[toolset]` |
+| `max-turns` | no | with a `toolset`: the most model calls allowed per invocation (default 8) |
+| `report-tool-calls` | no | with a `toolset`: `true` to emit the name of each tool called in a status message (default `false`) |
+
+An agent with a `toolset` is a `tool-calling-agent`, and one without a toolset
+is a `chat-agent` (see [components/agents](components/agents)).
 
 ## CLI
 
@@ -67,8 +78,6 @@ stderr. It exits successfully only when the task completes.
 ```sh
 agents invoke config.toml -- assistant "Why is the sky blue?"
 ```
-
-See [examples/chat-agent](examples/chat-agent).
 
 ## License
 

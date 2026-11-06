@@ -13,6 +13,7 @@ clap = { version = "4.6", features = ["derive"] }
 composable-agents = { path = "../.." }
 composable-otel = { git = "https://github.com/modulewise/composable-runtime", branch = "main" }
 composable-runtime.workspace = true
+composable-tools = { git = "https://github.com/modulewise/composable-tools", branch = "main" }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 serde_json.workspace = true
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

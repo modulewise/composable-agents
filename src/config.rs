@@ -1,7 +1,9 @@
 //! The `[model]` and `[agent]` config handlers.
 //!
-//! A model is a model-client component, chosen by its provider. An agent is a
-//! chat-agent component importing its model (until other agent types land).
+//! A model is a model-client component, chosen by its provider. An agent with
+//! a toolset is a tool-calling-agent component importing its model and
+//! toolset, and an agent without a toolset is a chat-agent component importing
+//! its model.
 
 use std::collections::HashMap;
 
@@ -13,6 +15,10 @@ use serde_json::{Map, Value, json};
 
 /// Handles each message by making one call to its model.
 const CHAT_AGENT: &str = "oci://localhost:5001/composable-agents/chat-agent:latest";
+
+/// Handles each message by calling its model in a loop, running the tools each
+/// response requests from its toolset.
+const TOOL_CALLING_AGENT: &str = "oci://localhost:5001/composable-agents/tool-calling-agent:latest";
 
 /// The model client for the Chat Completions API.
 const CHAT_COMPLETIONS_CLIENT: &str =
@@ -76,7 +82,16 @@ impl ConfigHandler for AgentConfigHandler {
             ),
             (
                 "agent",
-                ["model", "instructions", "description", "version"].as_slice(),
+                [
+                    "model",
+                    "toolset",
+                    "instructions",
+                    "description",
+                    "version",
+                    "max-turns",
+                    "report-tool-calls",
+                ]
+                .as_slice(),
             ),
         ])
     }
@@ -183,6 +198,7 @@ impl AgentConfigHandler {
         let model = required_string(&context, "model", properties)?;
         let description = required_string(&context, "description", properties)?;
         let version = required_string(&context, "version", properties)?;
+        let toolset = optional_string(&context, "toolset", properties)?;
 
         // The agent's `metadata()` reads its name, description, and version,
         // each of which `agent-metadata` requires.
@@ -194,11 +210,37 @@ impl AgentConfigHandler {
         if let Some(instructions) = optional_string(&context, "instructions", properties)? {
             config.insert("instructions".to_string(), json!(instructions));
         }
+        // `max-turns` and `report-tool-calls` are tool-calling-agent settings,
+        // rejected for an agent without a toolset.
+        if let Some(max_turns) = optional_u32(&context, "max-turns", properties)? {
+            if toolset.is_none() {
+                bail!("{context}: 'max-turns' is only supported for an agent with a 'toolset'");
+            }
+            if max_turns == 0 {
+                bail!("{context}: 'max-turns' must be greater than 0");
+            }
+            config.insert("max-turns".to_string(), json!(max_turns));
+        }
+        if let Some(report_tool_calls) = optional_bool(&context, "report-tool-calls", properties)? {
+            if toolset.is_none() {
+                bail!(
+                    "{context}: 'report-tool-calls' is only supported for an agent with a 'toolset'"
+                );
+            }
+            config.insert("report-tool-calls".to_string(), json!(report_tool_calls));
+        }
+        let (uri, imports) = match toolset {
+            Some(toolset) => (
+                TOOL_CALLING_AGENT,
+                json!([model, toolset, RANDOM_CAPABILITY_NAME]),
+            ),
+            None => (CHAT_AGENT, json!([model, RANDOM_CAPABILITY_NAME])),
+        };
         let mut definitions = vec![component(
             name,
             json!({
-                "uri": CHAT_AGENT,
-                "imports": [model, RANDOM_CAPABILITY_NAME],
+                "uri": uri,
+                "imports": imports,
                 "config": config,
             }),
         )];
@@ -549,7 +591,7 @@ mod tests {
     }
 
     #[test]
-    fn an_agent_is_a_chat_agent_importing_its_model() {
+    fn an_agent_without_a_toolset_is_a_chat_agent_importing_its_model() {
         let mut handler = AgentConfigHandler::default();
         let produced = produced(
             handler
@@ -583,6 +625,85 @@ mod tests {
             json!({ "type": "wasi:random" })
         );
         assert_eq!(produced.len(), 2);
+    }
+
+    #[test]
+    fn an_agent_with_a_toolset_is_a_tool_calling_agent_importing_its_model_and_toolset() {
+        let mut handler = AgentConfigHandler::default();
+        let produced = produced(
+            handler
+                .handle_definition(definition(
+                    "agent",
+                    "helper",
+                    json!({
+                        "model": "local",
+                        "toolset": "tools",
+                        "description": "Helps",
+                        "version": "1.0.0",
+                        "max-turns": 4,
+                        "report-tool-calls": true,
+                    }),
+                ))
+                .unwrap(),
+        );
+        assert_eq!(
+            produced[&key("component", "helper")],
+            json!({
+                "uri": TOOL_CALLING_AGENT,
+                "imports": ["local", "tools", "_random"],
+                "config": {
+                    "name": "helper",
+                    "description": "Helps",
+                    "version": "1.0.0",
+                    "max-turns": 4,
+                    "report-tool-calls": true,
+                },
+            })
+        );
+        assert_eq!(produced.len(), 2);
+    }
+
+    #[test]
+    fn tool_calling_settings_are_rejected_for_an_agent_without_a_toolset() {
+        for (property, value) in [("max-turns", json!(4)), ("report-tool-calls", json!(true))] {
+            let mut properties =
+                json!({ "model": "local", "description": "Helps", "version": "1.0.0" });
+            properties[property] = value;
+            let mut handler = AgentConfigHandler::default();
+            let error = handler
+                .handle_definition(definition("agent", "helper", properties))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(&format!(
+                    "'{property}' is only supported for an agent with a 'toolset'"
+                )),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn max_turns_must_be_greater_than_0() {
+        let mut handler = AgentConfigHandler::default();
+        let error = handler
+            .handle_definition(definition(
+                "agent",
+                "helper",
+                json!({
+                    "model": "local",
+                    "toolset": "tools",
+                    "description": "Helps",
+                    "version": "1.0.0",
+                    "max-turns": 0,
+                }),
+            ))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("'max-turns' must be greater than 0"),
+            "{error}"
+        );
     }
 
     #[test]
