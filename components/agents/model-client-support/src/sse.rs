@@ -1,6 +1,6 @@
 //! Server-sent events, parsed as the WHATWG HTML Standard defines them in
-//! "Parsing an event stream" and "Interpreting an event stream" (§9.2.5 and
-//! §9.2.6).
+//! "Parsing an event stream" (section 9.2.5) and
+//! "Interpreting an event stream" (section 9.2.6).
 
 use std::collections::VecDeque;
 
@@ -90,8 +90,8 @@ impl Parser {
             return;
         }
         // The field name is everything before the first colon, and the value
-        // everything after it, minus one leading space. A line without a colon
-        // is a field with an empty value.
+        // is everything after it, minus one leading space. A line without a
+        // colon is a field with an empty value.
         let (field, value) = match line.split_once(':') {
             Some((field, value)) => (field, value.strip_prefix(' ').unwrap_or(value)),
             None => (line, ""),

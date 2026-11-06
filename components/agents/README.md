@@ -63,7 +63,7 @@ JSON Schema `response_format`.
 | `base-url` | default: `https://api.openai.com/v1` (set one for different providers) |
 | `api-key` | optional: sent as a bearer token when set (most hosted providers require one) |
 | `max-tokens` | optional default, overridden by `model-settings` and the request |
-| `max-tokens-field` | default: `max_completion_tokens`; `max_tokens` for servers that read only that one (such as Ollama) |
+| `max-tokens-field` | default: `max_completion_tokens`; `max_tokens` for providers that still use it (such as Ollama) |
 
 ## anthropic-messages-client
 
@@ -88,8 +88,8 @@ off exponentially (0.5s doubling up to 8s).
 | `api-key` | optional: sent as a bearer token when set |
 | `max-tokens` | default: 64000, overridden by `model-settings` and the request |
 | `effort` | optional: `low`, `medium`, `high`, `xhigh` or `max`, sent as `output_config.effort` |
-| `include-reasoning` | default: `false`; `true` asks for adaptive thinking with a summary of it in each response |
-| `max-retries` | default: 2; how many times a failed request is sent again (0 for none) |
+| `include-reasoning` | default: `false`; `true` asks for adaptive thinking with a summary in each response |
+| `max-retries` | default: 2; how many times a failed request may be resent |
 
 It imports `wasi:clocks/monotonic-clock` for any waits between retries.
 
@@ -131,10 +131,9 @@ token budgets yet, so it refuses any request that includes one.
 The task streams a `working` status, then the model's text as the chunks of one
 artifact, with the last chunk marked. Each run of the model's reasoning, when
 the client returns it, is sent as one `working` status message whose part has
-`{"reasoning": true}` in its metadata, and is not part of the artifact.
-Dropping the event stream cancels the task and its model call. If the call fails, the task fails
-with the error as its status message, and any text already streamed remains its
-artifact. Its config:
+`{"reasoning": true}` in its metadata. Dropping the event stream cancels the
+task and its model call. If the call fails, the task fails with the error as
+its status message, and any text already streamed remains as its artifact.
 
 | Key | |
 |---|---|

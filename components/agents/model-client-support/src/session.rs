@@ -44,15 +44,15 @@ pub trait Client: 'static {
     fn headers(api_key: Option<&str>) -> Vec<(String, String)>;
 
     /// The maximum number of retries for a failed request (default 0). A
-    /// client that retries also implements `sleep`.
+    /// client that can return a nonzero value must implement `sleep`.
     fn max_retries(_config: &Self::Config) -> u32 {
         0
     }
 
-    /// Waits `duration` before a retry. It needs a clock import, so only a
-    /// client that retries implements it.
+    /// Waits `duration` before a retry. A client whose `max_retries` can be
+    /// a nonzero value must implement it since the default panics.
     fn sleep(_duration: Duration) -> impl Future<Output = ()> {
-        async {}
+        async { unreachable!("a client that retries must implement `sleep`") }
     }
 
     /// The initial state, from the settings and earlier exchanges. Fails on

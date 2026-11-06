@@ -16,7 +16,7 @@ use crate::composable::agents::types::{
 /// The maximum length of a tool name.
 const MAX_LEN: usize = 128;
 
-/// The name a tool is sent under.
+/// The name of a tool as sent to the client.
 fn sent(name: &str) -> String {
     name.replace('.', "_")
 }
@@ -239,7 +239,7 @@ mod tests {
         assert_eq!(names.original("calc_add"), "calc.add");
         assert_eq!(names.original("greet"), "greet");
         // A name the session didn't send comes back as the model called it.
-        assert_eq!(names.original("other"), "other");
+        assert_eq!(names.original("other_tool"), "other_tool");
 
         let delta = names.original_delta(ModelDelta::ToolCall(ToolCallDelta {
             index: 0,

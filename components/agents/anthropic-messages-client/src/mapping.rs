@@ -62,7 +62,6 @@ enum Block {
     ToolResult {
         tool_use_id: String,
         content: Vec<Block>,
-        #[serde(skip_serializing_if = "std::ops::Not::not")]
         is_error: bool,
     },
 }
@@ -1189,7 +1188,7 @@ mod tests {
                     { "type": "text", "text": "42" },
                     { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo=" } },
                     { "type": "text", "text": "[The tool returned media (https://example.com/a.mp3), which is left out of the result sent to this model.]" },
-                ] },
+                ], "is_error": false },
                 { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo=" } },
             ] })
         );
@@ -1212,7 +1211,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&message).unwrap(),
             json!({ "role": "user", "content": [
-                { "type": "tool_result", "tool_use_id": "toolu_1", "content": [{ "type": "text", "text": "15 degrees" }] },
+                { "type": "tool_result", "tool_use_id": "toolu_1", "content": [{ "type": "text", "text": "15 degrees" }], "is_error": false },
                 { "type": "text", "text": "Here is the result." },
             ] })
         );
@@ -1247,7 +1246,7 @@ mod tests {
                 { "type": "tool_result", "tool_use_id": "toolu_1", "content": [
                     { "type": "document", "source": { "type": "text", "media_type": "text/plain", "data": "ok" } },
                     { "type": "text", "text": "[The tool returned media (application/zip), which is left out of the result sent to this model.]" },
-                ] },
+                ], "is_error": false },
                 { "type": "document", "source": { "type": "base64", "media_type": "application/pdf", "data": "JVBERi0=" } },
                 { "type": "document", "source": { "type": "text", "media_type": "text/plain", "data": "# Hi" } },
                 { "type": "document", "source": { "type": "url", "url": "https://example.com/a.pdf" } },
@@ -1605,7 +1604,7 @@ mod tests {
                     { "type": "tool_use", "id": "toolu_1", "name": "calc_add", "input": { "a": 1, "b": 2 } },
                 ] },
                 { "role": "user", "content": [
-                    { "type": "tool_result", "tool_use_id": "toolu_1", "content": [{ "type": "text", "text": "3" }] },
+                    { "type": "tool_result", "tool_use_id": "toolu_1", "content": [{ "type": "text", "text": "3" }], "is_error": false },
                 ] },
                 { "role": "assistant", "content": [{ "type": "text", "text": "3" }] },
             ])

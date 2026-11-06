@@ -20,8 +20,6 @@ const MAX_RETRY_DELAY: Duration = Duration::from_secs(8);
 /// A request that fails before its response starts is retried up to
 /// `max_retries` times (see `should_retry`), waiting with `sleep` between
 /// attempts.
-///
-/// Error messages never include headers or a body.
 pub async fn send_request<S, F>(
     url: &str,
     headers: &[(String, String)],
