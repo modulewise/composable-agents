@@ -6,13 +6,13 @@ model defined beside it, which becomes the model client for its provider. Each
 invocation is one task. The agent sends the message to the model and streams
 the reply as the task's artifact.
 
-Each provider has its own config:
+Each model has its own config:
 
-| Provider | Config | Model | Client |
+| Model | Config | Provider | Client |
 |---|---|---|---|
-| `ollama` | `ollama.toml` | `gemma4:31b` | `chat-completions-client` |
-| `openai` | `openai.toml` | `gpt-5.4-mini` | `chat-completions-client` |
-| `anthropic` | `anthropic.toml` | `claude-haiku-5-5` (`effort = "high"`, `include-reasoning = true`) | `anthropic-messages-client` |
+| `gemma4:31b` | `gemma.toml` | `ollama` | `chat-completions-client` |
+| `gpt-5.4-mini` | `gpt.toml` | `openai` | `chat-completions-client` |
+| `claude-haiku-5-5` | `claude.toml` | `anthropic` (`effort = "high"`, `include-reasoning = true`) | `anthropic-messages-client` |
 
 ## Prerequisites
 
@@ -36,13 +36,13 @@ Each provider has its own config:
 ## Run
 
 ```sh
-./run.sh ollama "Why is the sky blue?"
-./run.sh openai "Why is the sky blue?"
-./run.sh anthropic "Why is the sky blue?"
+./run.sh gemma "Why is the sky blue?"
+./run.sh gpt "Why is the sky blue?"
+./run.sh claude "Why is the sky blue?"
 ```
 
 The script lists the agent's metadata, then invokes it with the question
-(`ollama` and "Why is the sky blue?" by default). The reply streams to stdout,
+(`gemma` and "Why is the sky blue?" by default). The reply streams to stdout,
 and the task's status, finish reason, and usage go to stderr:
 
 ```
@@ -56,16 +56,16 @@ usage: input 88, output 84, total 172, cache-read 0
 The message can also be piped to stdin:
 
 ```sh
-echo "What is 2+2?" | agents invoke ollama.toml -- assistant
+echo "What is 2+2?" | agents invoke gemma.toml -- assistant
 ```
 
 ## Reasoning
 
-`anthropic.toml` sets `include-reasoning = true`, so each run of the model's
+`claude.toml` sets `include-reasoning = true`, so each run of the model's
 reasoning, when it thinks, shows on stderr as a `reasoning:` line before the
 reply. Whether the model thinks is its own choice per request, so a simple
 question may show none:
 
 ```sh
-./run.sh anthropic "A train leaves at 9:47, the trip takes 2 hours 38 minutes, then it waits 55 minutes. When does it leave the station?"
+./run.sh claude "A train leaves at 9:15am. The trip takes 2 hours 15 minutes. Then it waits 30 minutes. When does it leave the station?"
 ```
