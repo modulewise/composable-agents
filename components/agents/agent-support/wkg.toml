@@ -1,2 +1,3 @@
 [overrides]
 "composable:agents" = { path = "../wit" }
+"composable:models" = { path = "../../models/wit" }

@@ -1,6 +1,6 @@
-//! Calls a model through `composable:agents/model-client`. Each `chat`
-//! creates a session with the output schema, if any, sends the prompt, and
-//! returns the response text.
+//! Calls a model through `composable:models/client`. Each `chat` creates a
+//! session with the output schema, if any, sends the prompt, and returns the
+//! response text.
 
 wit_bindgen::generate!({
     path: "wit",
@@ -8,8 +8,8 @@ wit_bindgen::generate!({
     generate_all,
 });
 
-use composable::agents::model_client::Session;
-use composable::agents::types::{ModelInputItem, ModelOutputItem, ModelRequest, ModelSettings};
+use composable::models::client::Session;
+use composable::models::types::{ModelInputItem, ModelOutputItem, ModelRequest, ModelSettings};
 
 struct Model;
 

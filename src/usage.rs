@@ -1,6 +1,6 @@
 //! The token usage of model exchanges, by provider and model.
 
-use crate::types::{ModelExchange, TokenUsage};
+use crate::model_types::{ModelExchange, TokenUsage};
 
 /// The token usage of the calls to one provider and requested model.
 #[derive(Debug)]
@@ -85,7 +85,7 @@ fn add_usage(total: &TokenUsage, usage: &TokenUsage) -> TokenUsage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ModelOutputItem, ModelRequest};
+    use crate::model_types::{ModelOutputItem, ModelRequest};
 
     fn exchange(
         provider: Option<&str>,

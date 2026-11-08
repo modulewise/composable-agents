@@ -7,6 +7,7 @@ wit_bindgen::generate!({
         "wasi:config/store@0.2.0-rc.1": agent_support::config_store,
         "wasi:random/random@0.3.0": agent_support::random,
         "composable:agents/types@0.1.0": agent_support::types,
+        "composable:models/types@0.1.0": agent_support::model_types,
     },
     generate_all,
 });
@@ -14,17 +15,19 @@ wit_bindgen::generate!({
 use futures::StreamExt;
 use wit_bindgen::rt::async_support::{StreamWriter, spawn_local};
 
+use agent_support::model_types::{
+    ContentDelta, ModelDelta, ModelExchange, ModelInputItem, ModelRequest, ModelSettings,
+};
 use agent_support::types::{
     AgentError, AgentEvent, AgentFinishReason, AgentMetadata, AgentRequest, AgentResponse,
-    AgentResponseStream, ContentDelta, ModelDelta, ModelExchange, ModelInputItem, ModelRequest,
-    ModelSettings, TaskState, TaskStatus,
+    AgentResponseStream, TaskState, TaskStatus,
 };
 use agent_support::{
     INSTRUCTIONS_CONFIG, INTERNAL_ERROR, INVALID_PARAMS, ReasoningRun, TaskIds, TextArtifact,
     agent_message, agent_metadata, get_config, model_input, new_id, reasoning_event,
     reasoning_runs, response_text, send, send_all, status_event,
 };
-use composable::agents::model_client::Session;
+use composable::models::client::Session;
 
 struct Component;
 

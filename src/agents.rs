@@ -276,7 +276,7 @@ mod tests {
     }
 
     const AGENT: &str = "composable:agents/agent@0.1.0";
-    const MODEL_CLIENT: &str = "composable:agents/model-client@0.1.0";
+    const MODEL_CLIENT: &str = "composable:models/client@0.1.0";
 
     fn component(name: &str, exports: &[&str]) -> Component {
         Component {

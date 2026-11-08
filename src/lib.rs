@@ -12,5 +12,6 @@ mod usage;
 
 pub use agents::{AGENT_EXPORT, AGENT_METADATA, AgentHost, Outcome, exports_agent};
 pub use bindings::composable::agents::types;
+pub use bindings::composable::models::types as model_types;
 pub use service::AgentService;
 pub use usage::{ModelUsage, usage_by_model};

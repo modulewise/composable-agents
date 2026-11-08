@@ -1,8 +1,7 @@
 //! Message parts as model input, and model output as text.
 
-use crate::composable::agents::types::{
-    ContentSource, MediaData, ModelInputItem, ModelOutputItem, Part, PartContent,
-};
+use crate::composable::agents::types::{Part, PartContent};
+use crate::composable::models::types::{ContentSource, MediaData, ModelInputItem, ModelOutputItem};
 
 /// The default media type for file bytes.
 pub const OCTET_STREAM: &str = "application/octet-stream";
@@ -58,7 +57,7 @@ pub fn response_text(output: &[ModelOutputItem]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::composable::agents::types::Reasoning;
+    use crate::composable::models::types::Reasoning;
 
     #[test]
     fn parts_become_model_input_by_media_type() {
