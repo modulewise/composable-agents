@@ -21,7 +21,6 @@ wit_bindgen::generate!({
     path: "wit",
     world: "model-client-support",
     generate_all,
-    // Every count `none`: no counts reported.
     additional_type_attributes: {
         "composable:agents/types@0.1.0/token-usage": [#[derive(Default)]],
     },

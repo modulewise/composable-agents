@@ -204,7 +204,7 @@ impl<C: Client> Session<C> {
         // response, update the state, and resolve the outcome. A response's
         // output (with the original tool names), opaque content, model and
         // counts are recorded in the exchange. A failure gets the counts
-        // recorded before it.
+        // that were recorded before it occurred.
         let (delta_tx, delta_rx) = C::delta_stream();
         let (outcome_tx, outcome_rx) = C::outcome_future(|| {
             Err(ModelError {

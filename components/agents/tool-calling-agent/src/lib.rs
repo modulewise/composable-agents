@@ -325,8 +325,8 @@ impl Task<'_> {
     }
 
     // The outcome of a task that ended in `state`, with `message` as its
-    // status message. Includes its artifact as sent, and the exchanges its
-    // model calls made and any closing exchange.
+    // status message. Includes its artifact as sent and the exchanges its
+    // model calls made, along with any closing exchange.
     fn end(
         self,
         state: TaskState,

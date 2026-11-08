@@ -5,7 +5,7 @@ interface types {
     /// A JSON value, as text.
     type json = string;
 
-    // === Model calls ========================================================
+    /// === Model calls =======================================================
 
     /// Binary/media content as inline bytes or a URL reference.
     variant content-source {
@@ -161,9 +161,8 @@ interface types {
         document(content-source),
     }
 
-    /// The token counts of one model call, as its provider reported them. A
-    /// count that is `none` was not reported, distinct from a reported 0. A
-    /// provider may report only some counts, or none at all.
+    /// The token counts of one model call, as its provider reported them. Any
+    /// count that is `none` was not reported, distinct from a reported 0.
     record token-usage {
         /// Input/prompt tokens.
         input-tokens: option<u64>,
@@ -242,7 +241,7 @@ interface types {
     /// A model call: its request and, if the call succeeded, the model's
     /// output. An exchange whose `provider` is `none` was not sent as a call,
     /// and its request is sent with the next call (e.g. the results of tools
-    /// the last response requested, when the agent ended before another call).`
+    /// the last response requested, when the agent ended before another turn).
     record model-exchange {
         request: model-request,
         /// The response's output, or `none` when the call failed, was
@@ -262,7 +261,7 @@ interface types {
         usage: token-usage,
     }
 
-    // === Agent content and task types (mirrors A2A types) ===================
+    /// === Agent content and task types (mirrors A2A types) ==================
 
     /// The sender of a message.
     enum role {

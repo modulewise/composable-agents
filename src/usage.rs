@@ -52,8 +52,8 @@ pub fn usage_by_model(exchanges: &[ModelExchange]) -> Vec<ModelUsage> {
     totals
 }
 
-// Every count `None`: no counts reported. The struct is generated, and
-// wasmtime's `bindgen!` can't add a derive to one type.
+// Every count starts at `None`. Unlike wit-bindgen, wasmtime's `bindgen!`
+// cannot add a derive to just one of the host-side types it generates.
 #[allow(clippy::derivable_impls)]
 impl Default for TokenUsage {
     fn default() -> Self {
