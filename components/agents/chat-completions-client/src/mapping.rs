@@ -5,9 +5,9 @@ use std::convert::Infallible;
 
 use model_client_support::sse::Events;
 use model_client_support::types::{
-    ContentSource, ModelDelta, ModelError, ModelExchange, ModelFinishReason, ModelInputItem,
-    ModelOutputItem, ModelResponse, ModelSettings, ResultContent, TokenUsage, ToolCall,
-    ToolCallDelta, ToolChoice, ToolDefinition,
+    ContentDelta, ContentSource, ModelDelta, ModelError, ModelExchange, ModelFinishReason,
+    ModelInputItem, ModelOutputItem, ModelResponse, ModelSettings, ResultContent, TokenUsage,
+    ToolCall, ToolCallDelta, ToolChoice, ToolDefinition,
 };
 use model_client_support::{
     Deltas, history_input_note, json_error_position, output_media_note, tool_result_media_note,
@@ -304,6 +304,7 @@ fn response_format(output_schema: &str) -> Result<ResponseFormat, ModelError> {
     let schema = serde_json::from_str(output_schema).map_err(|e| ModelError {
         message: format!("the output-schema is invalid JSON: {e}"),
         status: None,
+        usage: TokenUsage::default(),
     })?;
     Ok(ResponseFormat {
         kind: "json_schema",
@@ -338,6 +339,7 @@ fn to_openai_tool(def: &ToolDefinition) -> Result<Tool, ModelError> {
     let parameters = serde_json::from_str(&def.input_schema).map_err(|e| ModelError {
         message: format!("tool '{}' has an invalid input-schema: {e}", def.name),
         status: None,
+        usage: TokenUsage::default(),
     })?;
     Ok(Tool {
         kind: "function",
@@ -433,6 +435,7 @@ pub(crate) fn build_request(
     serde_json::to_vec(&req).map_err(|e| ModelError {
         message: format!("failed to serialize request: {e}"),
         status: None,
+        usage: TokenUsage::default(),
     })
 }
 
@@ -497,8 +500,6 @@ struct Usage {
     prompt_tokens: Option<u64>,
     #[serde(default)]
     completion_tokens: Option<u64>,
-    #[serde(default)]
-    total_tokens: Option<u64>,
     #[serde(default)]
     prompt_tokens_details: Option<PromptTokensDetails>,
     #[serde(default)]
@@ -571,12 +572,14 @@ fn complete(acc: Accumulator) -> Result<(ModelResponse, Message), ModelError> {
         return Err(ModelError {
             message: "the response ended before the provider finished it".to_string(),
             status: None,
+            usage: TokenUsage::default(),
         });
     }
     if !acc.refusal.is_empty() {
         return Err(ModelError {
             message: format!("the model refused: {}", acc.refusal),
             status: None,
+            usage: TokenUsage::default(),
         });
     }
     Ok(assemble(acc))
@@ -594,12 +597,14 @@ fn chunk_of(data: &str) -> Result<Chunk, ModelError> {
         ModelError {
             message: format!("the provider sent {what} ({})", json_error_position(&e)),
             status: None,
+            usage: TokenUsage::default(),
         }
     })?;
     match &chunk.error {
         Some(error) => Err(ModelError {
             message: error_message(error),
             status: None,
+            usage: TokenUsage::default(),
         }),
         None => Ok(chunk),
     }
@@ -628,8 +633,10 @@ async fn apply_chunk(
     if chunk.model.is_some() {
         acc.model = chunk.model;
     }
-    if chunk.usage.is_some() {
-        acc.usage = chunk.usage;
+    if let Some(usage) = chunk.usage {
+        let counts = token_usage(Some(&usage));
+        acc.usage = Some(usage);
+        deltas.write(ModelDelta::Usage(counts)).await?;
     }
     for choice in chunk.choices {
         if let Some(fr) = choice.finish_reason {
@@ -639,7 +646,9 @@ async fn apply_chunk(
             && !content.is_empty()
         {
             acc.text.push_str(&content);
-            deltas.write(ModelDelta::Text(content)).await?;
+            deltas
+                .write(ModelDelta::Content(ContentDelta::Text(content)))
+                .await?;
         }
         if let Some(refusal) = choice.delta.refusal {
             acc.refusal.push_str(&refusal);
@@ -663,13 +672,13 @@ async fn apply_chunk(
             if let Some(a) = &args {
                 entry.arguments.push_str(a);
             }
-            let delta = ModelDelta::ToolCall(ToolCallDelta {
+            let delta = ContentDelta::ToolCall(ToolCallDelta {
                 index: tc.index,
                 id: tc.id,
                 name,
                 arguments: args.unwrap_or_default(),
             });
-            deltas.write(delta).await?;
+            deltas.write(ModelDelta::Content(delta)).await?;
         }
     }
     Ok(())
@@ -707,23 +716,14 @@ fn assemble(acc: Accumulator) -> (ModelResponse, Message) {
 }
 
 // The usage the provider reported, count by count. A provider that reported
-// none leaves every count `None` and the call unreported.
+// none leaves every count `None`.
 fn token_usage(usage: Option<&Usage>) -> TokenUsage {
     let Some(usage) = usage else {
-        return TokenUsage {
-            input_tokens: None,
-            output_tokens: None,
-            total_tokens: None,
-            cache_read_tokens: None,
-            cache_write_tokens: None,
-            reasoning_tokens: None,
-            unreported_calls: 1,
-        };
+        return TokenUsage::default();
     };
     TokenUsage {
         input_tokens: usage.prompt_tokens,
         output_tokens: usage.completion_tokens,
-        total_tokens: usage.total_tokens,
         cache_read_tokens: usage
             .prompt_tokens_details
             .as_ref()
@@ -736,7 +736,6 @@ fn token_usage(usage: Option<&Usage>) -> TokenUsage {
             .completion_tokens_details
             .as_ref()
             .and_then(|details| details.reasoning_tokens),
-        unreported_calls: 0,
     }
 }
 
@@ -764,6 +763,10 @@ mod tests {
             },
             output,
             opaque_content: None,
+            provider: None,
+            request_model: None,
+            response_model: None,
+            usage: TokenUsage::default(),
         }
     }
 
@@ -1027,28 +1030,23 @@ mod tests {
         let usage = token_usage(Some(&reported));
         assert_eq!(usage.input_tokens, Some(12));
         assert_eq!(usage.output_tokens, Some(3));
-        assert_eq!(usage.total_tokens, Some(15));
         assert_eq!(usage.cache_write_tokens, Some(7));
         // A reported 0 stays 0; a count left out stays unknown.
         assert_eq!(usage.cache_read_tokens, Some(0));
         assert_eq!(usage.reasoning_tokens, None);
-        assert_eq!(usage.unreported_calls, 0);
 
         let partial: Usage = serde_json::from_value(json!({ "completion_tokens": 3 })).unwrap();
         let usage = token_usage(Some(&partial));
         assert_eq!(usage.input_tokens, None);
         assert_eq!(usage.output_tokens, Some(3));
-        assert_eq!(usage.unreported_calls, 0);
     }
 
     #[test]
-    fn a_response_without_usage_reports_no_counts_and_one_unreported_call() {
-        let usage = token_usage(None);
+    fn a_response_without_usage_reports_no_counts() {
         assert_eq!(
-            [usage.input_tokens, usage.output_tokens, usage.total_tokens],
-            [None, None, None]
+            format!("{:?}", token_usage(None)),
+            format!("{:?}", TokenUsage::default())
         );
-        assert_eq!(usage.unreported_calls, 1);
     }
 
     #[test]

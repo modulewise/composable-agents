@@ -7,7 +7,7 @@ use serde_json::Value;
 use wit_bindgen::rt::async_support::{StreamReader, StreamResult, spawn_local};
 
 use crate::componentized::http::client::{self, ErrorCode, HttpResponse, RequestOptions};
-use crate::composable::agents::types::ModelError;
+use crate::composable::agents::types::{ModelError, TokenUsage};
 use crate::wit_stream;
 
 // Backoff: 0.5s, doubled on each retry, at most 8s.
@@ -80,6 +80,7 @@ fn redirected(status: u16) -> ModelError {
     ModelError {
         message: format!("the provider redirected the request (status {status})"),
         status: Some(status as u32),
+        usage: TokenUsage::default(),
     }
 }
 
@@ -113,6 +114,7 @@ async fn error_of(response: HttpResponse) -> ModelError {
     ModelError {
         message,
         status: Some(status as u32),
+        usage: TokenUsage::default(),
     }
 }
 
@@ -137,6 +139,7 @@ fn failure(message: String) -> ModelError {
     ModelError {
         message,
         status: None,
+        usage: TokenUsage::default(),
     }
 }
 

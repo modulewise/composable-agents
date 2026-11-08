@@ -58,13 +58,13 @@ status: working: Calling tool `multiply`
 status: working
 status: working: Calling tool `subtract`
 status: working
-17 times 23, minus 5, is 386.
+17 times 23 minus 5 is 386.
 status: completed
 finish reason: completed (stop)
-usage: input 840, output 150, total 990, cache-read 526
+usage: ollama gemma4:31b (3 calls): input 840, output 146, cache-read 834
 ```
 
-The usage is summed over the task's model calls.
+The usage line sums the task's model calls for each provider and model.
 
 To invoke the agent directly (set the environment variables shown above first):
 

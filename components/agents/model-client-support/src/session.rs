@@ -11,7 +11,7 @@ use wit_bindgen::rt::async_support::{
 
 use crate::composable::agents::types::{
     ModelDelta, ModelError, ModelExchange, ModelInputItem, ModelRequest, ModelResponse,
-    ModelResponseStream, ModelSettings,
+    ModelResponseStream, ModelSettings, TokenUsage,
 };
 use crate::config::CommonConfig;
 use crate::http::send_request;
@@ -77,8 +77,9 @@ pub trait Client: 'static {
     ) -> Result<Vec<u8>, ModelError>;
 
     /// Reads the response body, writing deltas as they arrive, and returns the
-    /// assembled response and its state update. If the caller stops reading
-    /// the deltas, a write fails; the client returns that error and drops the
+    /// assembled response and its state update. Token counts the provider
+    /// reports are written as usage deltas. If the caller stops reading the
+    /// deltas, a write fails; the client returns that error and drops the
     /// body, closing the connection.
     fn read_response(
         body: StreamReader<u8>,
@@ -98,14 +99,20 @@ pub trait Client: 'static {
 }
 
 /// Writes a call's deltas, mapping tool-call names back to the original names.
+/// Records each usage delta in the call's exchange.
 pub struct Deltas {
     writer: StreamWriter<ModelDelta>,
     names: Rc<ToolNames>,
+    exchange: Rc<RefCell<ModelExchange>>,
 }
 
 impl Deltas {
-    /// Writes `delta`. Fails once the caller has stopped reading the deltas.
+    /// Writes `delta`. A usage delta is recorded in the call's exchange first.
+    /// Fails once the caller has stopped reading the deltas.
     pub async fn write(&mut self, delta: ModelDelta) -> Result<(), ModelError> {
+        if let ModelDelta::Usage(usage) = &delta {
+            self.exchange.borrow_mut().usage = *usage;
+        }
         match self
             .writer
             .write_one(self.names.original_delta(delta))
@@ -115,6 +122,7 @@ impl Deltas {
             Some(_) => Err(ModelError {
                 message: "the caller stopped reading the response".to_string(),
                 status: None,
+                usage: TokenUsage::default(),
             }),
         }
     }
@@ -131,7 +139,8 @@ pub struct Session<C: Client> {
     // Shared with the streaming task, which records the response when it
     // completes.
     state: Rc<RefCell<C::State>>,
-    exchanges: Rc<RefCell<Vec<ModelExchange>>>,
+    // Each call's exchange, shared with the task that reads its response.
+    exchanges: RefCell<Vec<Rc<RefCell<ModelExchange>>>>,
 }
 
 impl<C: Client> Session<C> {
@@ -149,26 +158,30 @@ impl<C: Client> Session<C> {
             config,
             names: Rc::new(names),
             state: Rc::new(RefCell::new(state)),
-            exchanges: Rc::new(RefCell::new(Vec::new())),
+            exchanges: RefCell::new(Vec::new()),
         })
     }
 
     pub async fn call(&self, request: ModelRequest) -> Result<ModelResponseStream, ModelError> {
-        // Add the input to the state and record the exchange; its output is set
-        // when the response is assembled. Unsendable input fails the call
-        // before it's recorded.
+        // Add the input to the state and record the exchange. Its output and
+        // counts are set as the response is read. Unsendable input fails the
+        // call before it's recorded.
         C::add_input(&mut self.state.borrow_mut(), &sent_input(&request.input))?;
         // The call's limit, else the session's, else the configured one.
         let max_tokens = request
             .max_tokens
             .or(self.settings.max_tokens)
             .or(self.common.max_tokens);
-        let exchange = self.exchanges.borrow().len();
-        self.exchanges.borrow_mut().push(ModelExchange {
+        let exchange = Rc::new(RefCell::new(ModelExchange {
             request,
             output: None,
             opaque_content: None,
-        });
+            provider: Some(self.common.provider.clone()),
+            request_model: Some(self.common.model.clone()),
+            response_model: None,
+            usage: TokenUsage::default(),
+        }));
+        self.exchanges.borrow_mut().push(exchange.clone());
 
         let body = C::request(
             &self.common.model,
@@ -188,42 +201,50 @@ impl<C: Client> Session<C> {
         .await?;
 
         // Read the response in a spawned task: write the deltas, assemble the
-        // response, update the state, record the output (with the original
-        // tool names) and opaque content in the exchange, and resolve the
-        // outcome.
+        // response, update the state, and resolve the outcome. A response's
+        // output (with the original tool names), opaque content, model and
+        // counts are recorded in the exchange. A failure gets the counts
+        // that were recorded before it occurred.
         let (delta_tx, delta_rx) = C::delta_stream();
         let (outcome_tx, outcome_rx) = C::outcome_future(|| {
             Err(ModelError {
                 message: "session dropped before completion".into(),
                 status: None,
+                usage: TokenUsage::default(),
             })
         });
 
         let state = self.state.clone();
-        let exchanges = self.exchanges.clone();
         let names = self.names.clone();
         spawn_local(async move {
             let mut deltas = Deltas {
                 writer: delta_tx,
                 names: names.clone(),
+                exchange: exchange.clone(),
             };
-            let outcome =
-                C::read_response(response.body, &mut deltas)
-                    .await
-                    .map(|(mut response, output)| {
-                        C::add_output(&mut state.borrow_mut(), output);
-                        response.output = names.original_output(response.output);
-                        let recorded = &mut exchanges.borrow_mut()[exchange];
-                        recorded.output = Some(response.output.clone());
-                        recorded.opaque_content = response.opaque_content.clone();
-                        response
-                    });
+            let outcome = C::read_response(response.body, &mut deltas).await;
             drop(deltas);
+            let outcome = match outcome {
+                Ok((mut response, output)) => {
+                    C::add_output(&mut state.borrow_mut(), output);
+                    response.output = names.original_output(response.output);
+                    let mut recorded = exchange.borrow_mut();
+                    recorded.output = Some(response.output.clone());
+                    recorded.opaque_content = response.opaque_content.clone();
+                    recorded.response_model = response.model.clone();
+                    recorded.usage = response.usage;
+                    Ok(response)
+                }
+                Err(mut error) => {
+                    error.usage = exchange.borrow().usage;
+                    Err(error)
+                }
+            };
             let _ = outcome_tx.write(outcome).await;
         });
 
         Ok(ModelResponseStream {
-            model: self.common.model.clone(),
+            request_model: self.common.model.clone(),
             provider: self.common.provider.clone(),
             deltas: delta_rx,
             result: outcome_rx,
@@ -231,6 +252,10 @@ impl<C: Client> Session<C> {
     }
 
     pub fn exchanges(&self) -> Vec<ModelExchange> {
-        self.exchanges.borrow().clone()
+        self.exchanges
+            .borrow()
+            .iter()
+            .map(|exchange| exchange.borrow().clone())
+            .collect()
     }
 }

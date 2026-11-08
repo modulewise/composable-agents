@@ -16,8 +16,8 @@ use wit_bindgen::rt::async_support::{StreamWriter, spawn_local};
 
 use agent_support::types::{
     AgentError, AgentEvent, AgentFinishReason, AgentMetadata, AgentRequest, AgentResponse,
-    AgentResponseStream, ModelDelta, ModelExchange, ModelInputItem, ModelRequest, ModelSettings,
-    TaskState, TaskStatus, TokenUsage,
+    AgentResponseStream, ContentDelta, ModelDelta, ModelExchange, ModelInputItem, ModelRequest,
+    ModelSettings, TaskState, TaskStatus,
 };
 use agent_support::{
     INSTRUCTIONS_CONFIG, INTERNAL_ERROR, INVALID_PARAMS, ReasoningRun, TaskIds, TextArtifact,
@@ -34,14 +34,6 @@ impl exports::composable::agents::agent::Guest for Component {
     }
 
     async fn invoke(request: AgentRequest) -> Result<AgentResponseStream, AgentError> {
-        // This agent refuses a token budget it cannot enforce.
-        if request.token_budget.is_some() {
-            return Err(AgentError {
-                code: INVALID_PARAMS,
-                message: "this agent does not enforce token budgets yet".to_string(),
-                data: None,
-            });
-        }
         let input = model_input(&request.message.parts);
         if input.is_empty() {
             return Err(AgentError {
@@ -107,13 +99,7 @@ async fn run(
 ) -> AgentResponse {
     let mut artifact = TextArtifact::new(new_id());
     if !send(&mut events, status_event(ids, TaskState::Working, None)).await {
-        return outcome(
-            TaskState::Canceled,
-            artifact,
-            session.exchanges(),
-            unreported(0),
-            None,
-        );
+        return outcome(TaskState::Canceled, artifact, session.exchanges(), None);
     }
     let stream = match session
         .call(ModelRequest {
@@ -130,39 +116,31 @@ async fn run(
     let mut streamed_text = false;
     let mut deltas = stream.deltas.into_stream();
     while let Some(delta) = deltas.next().await {
-        // A run of reasoning ends at the next delta of another kind.
+        // A run of reasoning ends at the next content delta of another kind.
         let ready: Vec<AgentEvent> = match delta {
-            ModelDelta::Reasoning(chunk) => {
+            ModelDelta::Content(ContentDelta::Reasoning(chunk)) => {
                 reasoning.push(chunk);
                 Vec::new()
             }
-            ModelDelta::Text(chunk) => {
+            ModelDelta::Content(ContentDelta::Text(chunk)) => {
                 streamed_text = true;
                 let ended = reasoning.finish(ids);
                 ended.into_iter().chain(artifact.push(chunk, ids)).collect()
             }
-            ModelDelta::ToolCall(_) => reasoning.finish(ids).into_iter().collect(),
+            ModelDelta::Content(ContentDelta::ToolCall(_)) => {
+                reasoning.finish(ids).into_iter().collect()
+            }
+            // The session records the counts in the call's exchange.
+            ModelDelta::Usage(_) => Vec::new(),
         };
         if !send_all(&mut events, ready).await {
             drop(deltas);
-            return outcome(
-                TaskState::Canceled,
-                artifact,
-                session.exchanges(),
-                unreported(1),
-                None,
-            );
+            return outcome(TaskState::Canceled, artifact, session.exchanges(), None);
         }
     }
     // A run of reasoning also ends with the stream.
     if !send_all(&mut events, reasoning.finish(ids).into_iter().collect()).await {
-        return outcome(
-            TaskState::Canceled,
-            artifact,
-            session.exchanges(),
-            unreported(1),
-            None,
-        );
+        return outcome(TaskState::Canceled, artifact, session.exchanges(), None);
     }
 
     let response = match stream.result.await {
@@ -175,7 +153,6 @@ async fn run(
             return failed(ids, &e.message, artifact, session.exchanges());
         }
     };
-    let usage = response.usage;
     let reason = Some(AgentFinishReason::Model(response.finish_reason));
     // If no reasoning deltas were streamed, send each run of reasoning in the
     // output as a status message, before the text.
@@ -185,13 +162,7 @@ async fn run(
             .map(|text| reasoning_event(ids, text))
             .collect();
         if !send_all(&mut events, runs).await {
-            return outcome(
-                TaskState::Canceled,
-                artifact,
-                session.exchanges(),
-                usage,
-                reason,
-            );
+            return outcome(TaskState::Canceled, artifact, session.exchanges(), reason);
         }
     }
     // A response that streamed no text deltas sends its whole text as one
@@ -200,57 +171,23 @@ async fn run(
         && let Some(event) = artifact.push(response_text(&response.output), ids)
         && !send(&mut events, event).await
     {
-        return outcome(
-            TaskState::Canceled,
-            artifact,
-            session.exchanges(),
-            usage,
-            reason,
-        );
+        return outcome(TaskState::Canceled, artifact, session.exchanges(), reason);
     }
     if let Some(event) = artifact.finish(ids)
         && !send(&mut events, event).await
     {
-        return outcome(
-            TaskState::Canceled,
-            artifact,
-            session.exchanges(),
-            usage,
-            reason,
-        );
+        return outcome(TaskState::Canceled, artifact, session.exchanges(), reason);
     }
-    outcome(
-        TaskState::Completed,
-        artifact,
-        session.exchanges(),
-        usage,
-        reason,
-    )
-}
-
-// Usage with no counts, for `calls` number of model calls that did not report
-// any. The `calls` value will be 0 when the task made no call, and 1 when its
-// call failed or was canceled before the provider reported usage.
-fn unreported(calls: u32) -> TokenUsage {
-    TokenUsage {
-        input_tokens: None,
-        output_tokens: None,
-        total_tokens: None,
-        cache_read_tokens: None,
-        cache_write_tokens: None,
-        reasoning_tokens: None,
-        unreported_calls: calls,
-    }
+    outcome(TaskState::Completed, artifact, session.exchanges(), reason)
 }
 
 // The outcome of a task that ended in `state`. Includes its artifact as sent,
-// the exchanges its model call made, the usage it reported, and the finish
-// reason if the call produced a response.
+// the exchanges its model call made, and the finish reason if the call
+// produced a response.
 fn outcome(
     state: TaskState,
     artifact: TextArtifact,
-    added_history: Vec<ModelExchange>,
-    usage: TokenUsage,
+    exchanges: Vec<ModelExchange>,
     finish_reason: Option<AgentFinishReason>,
 ) -> AgentResponse {
     AgentResponse {
@@ -260,27 +197,20 @@ fn outcome(
             timestamp: None,
         },
         artifacts: artifact.into_artifact().into_iter().collect(),
-        added_history,
-        usage,
+        exchanges,
         finish_reason,
     }
 }
 
 // The outcome of a task whose model call failed, with the failure as the
-// status message. The call reported no usage.
+// status message.
 fn failed(
     ids: &TaskIds,
     error: &str,
     artifact: TextArtifact,
-    added_history: Vec<ModelExchange>,
+    exchanges: Vec<ModelExchange>,
 ) -> AgentResponse {
-    let mut response = outcome(
-        TaskState::Failed,
-        artifact,
-        added_history,
-        unreported(1),
-        None,
-    );
+    let mut response = outcome(TaskState::Failed, artifact, exchanges, None);
     response.status.message = Some(agent_message(
         ids,
         format!("the model call failed: {error}"),

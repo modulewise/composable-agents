@@ -20,17 +20,21 @@ A `session` serves one agent invocation:
 - **`constructor(settings, history)`** takes the caller's `model-settings` and
   the conversation's earlier exchanges, and fails on history it cannot use.
 - **`call(request)`** makes one model call and returns the response as it
-  arrives, with a stream of deltas and a future of the final `model-response`.
-  A request's `max-tokens` limits the call, taking precedence over the
-  session's.
+  arrives, with a stream of deltas (content fragments and token counts) and a
+  future of the final `model-response`. A request's `max-tokens` limits the
+  call, taking precedence over the session's.
 - **`exchanges()`** returns the calls made within the session (each request
-  with its output), for the caller to maintain and pass to a later session.
+  with its output, provider, models, and token counts), for the caller to add
+  to the conversation's history.
 
 A response that never finishes (a stream that ends without a finish reason,
 or carries a provider error) fails the call with the provider's message.
-Any token usage count is `none` when not reported, and `unreported-calls`
-is the total count of calls that reported none, indicating that the sum may
-represent a subset of actual token usage.
+
+Token counts are recorded in each call's exchange as the provider reports
+them, so a call that fails or is canceled keeps the counts reported before it
+ended. A `usage` delta carries the counts so far, and the final
+`model-response` or `model-error` carries the call's counts. A count that is
+`none` means it was not reported.
 
 History follows four rules:
 
@@ -114,19 +118,17 @@ An agent handles each `invoke` as a task:
   `agent-response`.
 
 The response carries the task's final status, its assembled artifacts, the
-model exchanges the invocation added (for the caller to keep and pass as the
-next request's `history`), the token usage, and a finish reason. An
-`agent-error` means the request could not be handled as a task, which is
-distinct from a task that ran and failed. An agent that does not enforce a
-request's `token-budget` refuses the request.
+model exchanges the invocation made (with each call's token counts, for the
+caller to add to the history it passes to later requests), and a finish
+reason. An `agent-error` means the request could not be handled as a task,
+which is distinct from a task that ran and failed.
 
 ## chat-agent
 
 Implements `agent` with one call to a `model-client` per message, so it can be
 composed with any client, e.g. `chat-completions-client`. It has no tools. Text
 and data parts become text input, and files become image, audio, video, or
-document input by media type, which the client may refuse. It does not enforce
-token budgets yet, so it refuses any request that includes one.
+document input by media type, which the client may refuse.
 
 The task streams a `working` status, then the model's text as the chunks of one
 artifact, with the last chunk marked. Each run of the model's reasoning, when
@@ -148,9 +150,11 @@ Implements `agent` with calls to a `model-client` in a loop. It imports a
 `composable:tools` `toolset`, so it can be composed with any local and/or
 remote tools. It shares the tools' metadata with the model, runs tools as
 requested by the model, and sends their results back to the model. The task
-completes when a model response requests no more tool calls. It fails at the
-turn limit, or if a response's finish reason is a tool request but its output
-includes no tool calls.
+completes when a model response requests no more tool calls. It fails if a
+response's finish reason is a tool request but its output includes no tool
+calls. At `max-turns`, it runs the tools the last response requested, then
+fails with the finish reason `max-turns`, so the next invocation starts with
+their results.
 
 The task streams a `working` status before each model call, and reasoning and
 text as in chat-agent, with the text of every call in one artifact. Dropping
@@ -159,9 +163,9 @@ the event stream cancels the task at its next event.
 A tool's text, images, audio, resource links, and embedded blobs pass to the
 model client, which replaces any it can't send with a note. A tool call that
 fails returns its error to the model as an error result. If the task ends
-before sending a response's tool results, its added history includes them, with
-an error result for each tool that didn't run, so every tool call in the
-history is answered.
+before sending a response's tool results, its exchanges end with one that
+isn't sent as a call. That includes the results, with an error result for each
+tool that didn't run, so every tool call in the history is answered.
 
 | Key | |
 |---|---|

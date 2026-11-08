@@ -9,8 +9,8 @@
 use std::collections::HashMap;
 
 use crate::composable::agents::types::{
-    ModelDelta, ModelError, ModelExchange, ModelInputItem, ModelOutputItem, ModelSettings,
-    ToolChoice,
+    ContentDelta, ModelDelta, ModelError, ModelExchange, ModelInputItem, ModelOutputItem,
+    ModelSettings, TokenUsage, ToolChoice,
 };
 
 /// The maximum length of a tool name.
@@ -40,6 +40,7 @@ impl ToolNames {
                         definition.name
                     ),
                     status: None,
+                    usage: TokenUsage::default(),
                 });
             }
             let name = sent(&definition.name);
@@ -50,6 +51,7 @@ impl ToolNames {
                         definition.name
                     ),
                     status: None,
+                    usage: TokenUsage::default(),
                 });
             }
         }
@@ -68,9 +70,9 @@ impl ToolNames {
     /// A delta with a tool call's name mapped back.
     pub(crate) fn original_delta(&self, delta: ModelDelta) -> ModelDelta {
         match delta {
-            ModelDelta::ToolCall(mut call) => {
+            ModelDelta::Content(ContentDelta::ToolCall(mut call)) => {
                 call.name = call.name.map(|name| self.original(&name));
-                ModelDelta::ToolCall(call)
+                ModelDelta::Content(ContentDelta::ToolCall(call))
             }
             delta => delta,
         }
@@ -220,6 +222,10 @@ mod tests {
                 api: "some-api".into(),
                 content: r#"[{"name":"calc_add"}]"#.into(),
             }),
+            provider: Some("some-provider".into()),
+            request_model: Some("some-model".into()),
+            response_model: None,
+            usage: TokenUsage::default(),
         }]);
         assert_eq!(
             history[0].opaque_content.as_ref().unwrap().content,
@@ -241,14 +247,15 @@ mod tests {
         // A name the session didn't send comes back as the model called it.
         assert_eq!(names.original("other_tool"), "other_tool");
 
-        let delta = names.original_delta(ModelDelta::ToolCall(ToolCallDelta {
-            index: 0,
-            id: Some("call-1".into()),
-            name: Some("calc_add".into()),
-            arguments: String::new(),
-        }));
+        let delta =
+            names.original_delta(ModelDelta::Content(ContentDelta::ToolCall(ToolCallDelta {
+                index: 0,
+                id: Some("call-1".into()),
+                name: Some("calc_add".into()),
+                arguments: String::new(),
+            })));
         assert!(
-            matches!(delta, ModelDelta::ToolCall(ToolCallDelta { name: Some(ref name), .. }) if name == "calc.add")
+            matches!(delta, ModelDelta::Content(ContentDelta::ToolCall(ToolCallDelta { name: Some(ref name), .. })) if name == "calc.add")
         );
 
         let output = names.original_output(vec![

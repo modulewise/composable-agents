@@ -2,7 +2,7 @@
 
 use std::str::FromStr;
 
-use crate::composable::agents::types::ModelError;
+use crate::composable::agents::types::{ModelError, TokenUsage};
 
 const API_KEY_CONFIG: &str = "api-key";
 const BASE_URL_CONFIG: &str = "base-url";
@@ -49,6 +49,7 @@ pub fn required_config(key: &str) -> Result<String, ModelError> {
     get_config(key).ok_or_else(|| ModelError {
         message: format!("no '{key}' configured"),
         status: None,
+        usage: TokenUsage::default(),
     })
 }
 
@@ -60,6 +61,7 @@ pub fn parsed_config<T: FromStr>(key: &str, expected: &str) -> Result<Option<T>,
             value.parse().map_err(|_| ModelError {
                 message: format!("'{key}' must be {expected}, got '{value}'"),
                 status: None,
+                usage: TokenUsage::default(),
             })
         })
         .transpose()
