@@ -1,6 +1,7 @@
 //! The model's reasoning, sent as `working` status messages.
 
-use crate::composable::agents::types::{AgentEvent, Message, ModelOutputItem, Part, TaskState};
+use crate::composable::agents::types::{AgentEvent, Message, Part, TaskState};
+use crate::composable::models::types::ModelOutputItem;
 use crate::events::{TaskIds, agent_message, status_event, text_part};
 
 // Part metadata that marks a status message as the model's reasoning.
@@ -68,7 +69,8 @@ fn reasoning_part(text: String) -> Part {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::composable::agents::types::{PartContent, Reasoning};
+    use crate::composable::agents::types::PartContent;
+    use crate::composable::models::types::Reasoning;
 
     fn reasoning(text: &str, redacted: bool) -> ModelOutputItem {
         ModelOutputItem::Reasoning(Reasoning {

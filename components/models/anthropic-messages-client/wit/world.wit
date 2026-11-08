@@ -1,0 +1,9 @@
+package composable-agents:anthropic-messages-client@0.1.0;
+
+world anthropic-messages-client {
+    import wasi:config/store@0.2.0-rc.1;
+    import componentized:http/client@0.1.0;
+    import wasi:clocks/monotonic-clock@0.3.0;
+
+    export composable:models/client@0.1.0;
+}

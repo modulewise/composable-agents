@@ -4,7 +4,10 @@
 
 Agents and model clients as Wasm components that run on
 [composable-runtime](https://github.com/modulewise/composable-runtime).
-The WIT they implement is in [components/agents](components/agents).
+
+The WIT they implement is in [components/agents](components/agents)
+(`composable:agents`) and [components/models](components/models)
+(`composable:models`).
 
 ## Examples
 

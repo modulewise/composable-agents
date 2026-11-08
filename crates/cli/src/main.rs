@@ -6,9 +6,10 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use tracing_subscriber::EnvFilter;
 
+use composable_agents::model_types::{ModelFinishReason, TokenUsage};
 use composable_agents::types::{
-    AgentEvent, AgentFinishReason, AgentRequest, Message, ModelFinishReason, Part, PartContent,
-    Role, TaskState, TaskStatus, TokenUsage,
+    AgentEvent, AgentFinishReason, AgentRequest, Message, Part, PartContent, Role, TaskState,
+    TaskStatus,
 };
 use composable_agents::{AgentHost, AgentService, ModelUsage, usage_by_model};
 use composable_otel::OtelService;

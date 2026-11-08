@@ -1,0 +1,11 @@
+world imports {
+    import agent;
+}
+
+/// An agent that delegates to a model. An agent component may include this
+/// world in its own, along with anything else it imports.
+world base-agent {
+    import composable:models/client@0.1.0;
+
+    export agent;
+}

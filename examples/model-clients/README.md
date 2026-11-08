@@ -3,11 +3,11 @@
 Demonstrates calling a model directly through a model client. The `model`
 component is implemented here as an example entry point (as opposed to using
 an agent component that plays that same role). It imports a model client
-component, which exports the `composable:agents/model-client` interface as
-defined in [WIT](../../components/agents/wit). Each time the model component's
-exported `chat` function is invoked, it opens a session, sends the prompt
-within a request, and returns the reply as text. When an output schema is
-passed, the reply JSON will match it.
+component, which exports the `composable:models/client` interface as defined in
+[WIT](../../components/models/wit). Each time the model component's exported
+`chat` function is invoked, it opens a session, sends the prompt within a
+request, and returns the reply as text. When an output schema is passed, the
+reply JSON will match it.
 
 Each client has its own config:
 
@@ -66,7 +66,7 @@ config.api-key = "${process:env:OPENAI_API_KEY}"
 
 Without `base-url`, `chat-completions-client` calls `https://api.openai.com/v1`
 and `anthropic-messages-client` calls `https://api.anthropic.com/v1`. See
-[components/agents](../../components/agents) for each client's config.
+[components/models](../../components/models) for each client's config.
 
 > [!NOTE]
 >

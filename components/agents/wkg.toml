@@ -1,0 +1,2 @@
+[overrides]
+"composable:models" = { path = "../models/wit" }

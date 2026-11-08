@@ -1,0 +1,286 @@
+package composable:models@0.1.0;
+
+/// Types for the model `client` interface.
+interface types {
+  /// A JSON value, as text.
+  type json = string;
+
+  record media-data {
+    /// MIME type, e.g. "image/png", "application/pdf".
+    mime-type: string,
+    /// Base64-encoded bytes.
+    data: string,
+  }
+
+  /// Binary/media content as inline bytes or a URL reference.
+  variant content-source {
+    data(media-data),
+    url(string),
+  }
+
+  /// Content a tool result may contain.
+  variant result-content {
+    text(string),
+    media(content-source),
+  }
+
+  /// Result of a tool call made by the agent, correlated by `tool-call-id`.
+  record tool-result {
+    /// ID of the tool call this answers (provider tool_call_id / tool_use_id).
+    tool-call-id: string,
+    /// Name of the tool, as in the `tool-call` this answers.
+    name: string,
+    /// Result content (text and/or media).
+    content: list<result-content>,
+    /// Whether the tool reported an error.
+    is-error: bool,
+  }
+
+  /// One item of input for a call. The model's input is
+  /// `list<model-input-item>`, allowing e.g. multiple tool-results and/or
+  /// user text in a single call.
+  variant model-input-item {
+    text(string),
+    image(content-source),
+    audio(content-source),
+    video(content-source),
+    document(content-source),
+    tool-result(tool-result),
+  }
+
+  record tool-definition {
+    name: string,
+    description: string,
+    /// JSON Schema describing the tool's input parameters.
+    input-schema: json,
+  }
+
+  /// Controls how the model selects tools.
+  variant tool-choice {
+    auto,
+    none,
+    required,
+    specific(string),
+  }
+
+  /// The caller's settings for one session, supplied to its constructor.
+  record model-settings {
+    /// System-level instructions.
+    instructions: option<string>,
+    /// Tools available for function calling.
+    tools: option<list<tool-definition>>,
+    /// How the model should select tools.
+    tool-choice: option<tool-choice>,
+    /// JSON Schema for structured output.
+    output-schema: option<json>,
+    /// Common sampling parameters, each taking precedence over the same
+    /// setting in the implementing component's own config. Ranges are
+    /// provider-dependent. Each implementing component should validate or
+    /// clamp for its model. Parameters a given provider does not support
+    /// should be ignored.
+    temperature: option<f64>,
+    top-p: option<f64>,
+    top-k: option<u32>,
+    max-tokens: option<u32>,
+    seed: option<u64>,
+    stop-sequences: option<list<string>>,
+  }
+
+  /// One model call's request.
+  record model-request {
+    /// The call's input: e.g. user text, or the results of the tools the
+    /// previous response requested.
+    input: list<model-input-item>,
+    /// This call's output limit in token count, taking precedence over
+    /// `model-settings.max-tokens`.
+    max-tokens: option<u32>,
+  }
+
+  record tool-call-delta {
+    /// Stream index correlating fragments of the same tool call.
+    index: u32,
+    /// Tool call id, present on the first fragment.
+    id: option<string>,
+    /// Tool name, present on the first fragment.
+    name: option<string>,
+    /// A fragment of the JSON arguments.
+    arguments: string,
+  }
+
+  /// A fragment of a response's content.
+  variant content-delta {
+    /// A fragment of assistant text.
+    text(string),
+    /// A fragment of reasoning/extended-thinking text.
+    reasoning(string),
+    /// A streamed tool-call fragment (assembled by index across deltas).
+    tool-call(tool-call-delta),
+  }
+
+  /// A tool call requested by the model.
+  record tool-call {
+    id: string,
+    name: string,
+    /// The arguments object.
+    arguments: json,
+  }
+
+  /// The model's reasoning. Any provider state needed to replay it is in the
+  /// response's `opaque-content`.
+  record reasoning {
+    /// Human-readable reasoning text or summary. Empty if redacted or not
+    /// returned.
+    text: string,
+    /// True when the reasoning text was deliberately withheld.
+    redacted: bool,
+  }
+
+  /// One item of the model's output, as assembled in the final response.
+  /// The media cases mirror `model-input-item`'s. A client produces one only
+  /// when its API returns that kind of media and the client's config
+  /// specifies it.
+  variant model-output-item {
+    text(string),
+    reasoning(reasoning),
+    tool-call(tool-call),
+    image(content-source),
+    audio(content-source),
+    video(content-source),
+    document(content-source),
+  }
+
+  /// The token counts of one model call, as its provider reported them. Any
+  /// count that is `none` was not reported, distinct from a reported 0.
+  record token-usage {
+    /// Input/prompt tokens.
+    input-tokens: option<u64>,
+    /// Output/completion tokens.
+    output-tokens: option<u64>,
+    /// Input tokens served from cache.
+    cache-read-tokens: option<u64>,
+    /// Input tokens written to cache.
+    cache-write-tokens: option<u64>,
+    /// Reasoning/thinking tokens.
+    reasoning-tokens: option<u64>,
+  }
+
+  /// An incremental update streamed as the model generates.
+  variant model-delta {
+    /// A fragment of the response's content.
+    content(content-delta),
+    /// The token counts the provider has reported so far, replacing any
+    /// earlier ones.
+    usage(token-usage),
+  }
+
+  /// Why the model stopped generating. Each variant carries the raw provider
+  /// value (for OTel gen_ai.response.finish_reasons and logs). The variant
+  /// itself drives the loop's state transitions.
+  variant model-finish-reason {
+    /// Normal end state (openai "stop" / anthropic "end_turn").
+    completed(string),
+    /// Model requested one or more tools (openai "tool_calls" / anthropic "tool_use").
+    tool-requested(string),
+    /// Truncated by token limit (openai "length" / anthropic "max_tokens").
+    truncated(string),
+    /// Hit a stop sequence (anthropic "stop_sequence").
+    stopped(string),
+    /// Blocked by content policy (openai "content_filter" / anthropic "refusal").
+    blocked(string),
+    /// Long-running turn paused, resumable (anthropic "pause_turn").
+    paused(string),
+    /// Any other/unmapped provider reason, holding the raw value.
+    other(string),
+  }
+
+  /// A response's output in its API's own form, for a later call to the
+  /// same API to send back unchanged. Only a client of that API reads it;
+  /// others keep it as is.
+  record opaque-content {
+    /// The API that `content` belongs to, e.g. "anthropic-messages".
+    api: string,
+    /// The output in that API's form.
+    content: string,
+  }
+
+  /// The final result of a call, resolved after the delta stream completes.
+  record model-response {
+    output: list<model-output-item>,
+    finish-reason: model-finish-reason,
+    usage: token-usage,
+    /// Provider-assigned id for this response.
+    response-id: option<string>,
+    /// Actual model that produced the response, if reported.
+    model: option<string>,
+    /// The output in its API's own form, from a client that keeps it.
+    opaque-content: option<opaque-content>,
+  }
+
+  record model-error {
+    message: string,
+    /// Provider/transport status code when applicable.
+    status: option<u32>,
+    /// The token counts the provider reported before the call failed.
+    usage: token-usage,
+  }
+
+  /// The response for a `call`. The deltas stream as the model generates,
+  /// and the future resolves to the `model-response` when the stream ends.
+  record model-response-stream {
+    /// The model the call requested. The response model may differ.
+    request-model: string,
+    /// The provider serving the call, e.g. "openai" or "ollama".
+    provider: string,
+    deltas: stream<model-delta>,
+    %result: future<result<model-response, model-error>>,
+  }
+
+  /// A model call: its request and, if the call succeeded, the model's
+  /// output. An exchange whose `provider` is `none` was not sent as a call,
+  /// and its request is sent with the next call (e.g. the results of tools
+  /// the last response requested, when the agent ended before another turn).
+  record model-exchange {
+    request: model-request,
+    /// The response's output, or `none` when the call failed, was
+    /// canceled, or was not sent.
+    output: option<list<model-output-item>>,
+    /// The output in its API's own form, if the client kept it. Keep it
+    /// with the history; a client of another API uses `output` instead.
+    opaque-content: option<opaque-content>,
+    /// The provider serving the call, or `none` if it was not sent.
+    provider: option<string>,
+    /// The model the call requested, or `none` if it was not sent.
+    request-model: option<string>,
+    /// The model that produced the response, if reported.
+    response-model: option<string>,
+    /// The token counts the provider reported, including those reported
+    /// before a call failed or was canceled.
+    usage: token-usage,
+  }
+}
+
+/// Model Client Interface. A common abstraction over language model APIs.
+///
+/// A `session` resource is created for one agent invocation, with the caller's
+/// `model-settings` and any earlier exchanges from the conversation.
+interface client {
+  use types.{model-settings, model-request, model-exchange, model-response-stream, model-error};
+
+  /// An agent invocation.
+  resource session {
+    /// Create a session with the caller's settings, continuing from the
+    /// conversation's earlier exchanges, oldest first. Fails on history
+    /// the client cannot use.
+    constructor(settings: model-settings, history: list<model-exchange>) -> result<session, model-error>;
+    /// Make one model call and stream the model's response as a series of
+    /// `model-delta` items followed by a final `model-response`.
+    call: async func(request: model-request) -> result<model-response-stream, model-error>;
+    /// The exchanges this session's calls made, oldest first.
+    exchanges: func() -> list<model-exchange>;
+  }
+}
+
+world imports {
+  import types;
+  import client;
+}

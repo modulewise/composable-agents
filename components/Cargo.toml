@@ -1,11 +1,11 @@
 [workspace]
 members = [
     "agents/agent-support",
-    "agents/anthropic-messages-client",
     "agents/chat-agent",
-    "agents/chat-completions-client",
-    "agents/model-client-support",
     "agents/tool-calling-agent",
+    "models/anthropic-messages-client",
+    "models/chat-completions-client",
+    "models/model-client-support",
 ]
 resolver = "3"
 

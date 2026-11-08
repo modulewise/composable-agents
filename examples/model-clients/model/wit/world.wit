@@ -1,7 +1,7 @@
 package composable-agents:model-clients-example@0.1.0;
 
 world model {
-    import composable:agents/model-client@0.1.0;
+    import composable:models/client@0.1.0;
 
     export chat: async func(prompt: string, output-schema: option<string>) -> result<string, string>;
 }
