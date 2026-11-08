@@ -2,7 +2,7 @@
 //! can't send fails a new call, and becomes a note in history.
 
 use crate::composable::agents::types::{
-    ContentSource, ModelError, ModelExchange, ModelInputItem, ModelOutputItem,
+    ContentSource, ModelError, ModelExchange, ModelInputItem, ModelOutputItem, TokenUsage,
 };
 
 /// Fails on a tool call in `history` without a tool result in the next
@@ -24,6 +24,7 @@ pub fn require_answered_tool_calls(history: &[ModelExchange]) -> Result<(), Mode
                         call.id, call.name
                     ),
                     status: None,
+                    usage: TokenUsage::default(),
                 });
             }
         }
@@ -39,6 +40,7 @@ pub fn unsendable_input_error(kind: &str, source: &ContentSource) -> ModelError 
             media_detail(source)
         ),
         status: None,
+        usage: TokenUsage::default(),
     }
 }
 
@@ -95,6 +97,10 @@ mod tests {
             },
             output,
             opaque_content: None,
+            provider: Some("some-provider".into()),
+            request_model: Some("some-model".into()),
+            response_model: None,
+            usage: TokenUsage::default(),
         }
     }
 

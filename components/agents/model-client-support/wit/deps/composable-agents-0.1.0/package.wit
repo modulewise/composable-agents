@@ -93,7 +93,7 @@ interface types {
     /// previous response requested.
     input: list<model-input-item>,
     /// This call's output limit in token count, taking precedence over
-    /// `model-settings.max-tokens` (e.g. what remains of a budget).
+    /// `model-settings.max-tokens`.
     max-tokens: option<u32>,
   }
 
@@ -108,8 +108,8 @@ interface types {
     arguments: string,
   }
 
-  /// An incremental update streamed as the model generates.
-  variant model-delta {
+  /// A fragment of a response's content.
+  variant content-delta {
     /// A fragment of assistant text.
     text(string),
     /// A fragment of reasoning/extended-thinking text.
@@ -150,26 +150,29 @@ interface types {
     document(content-source),
   }
 
-  /// Token counts for one or more model calls, as their providers reported
-  /// them. A count that is `none` was not reported, disctinct from a
-  /// reported 0. A provider may report only some counts, or none at all.
+  /// The token counts of one model call, as its provider reported them. A
+  /// count that is `none` was not reported, distinct from a reported 0. A
+  /// provider may report only some counts, or none at all.
   record token-usage {
     /// Input/prompt tokens.
     input-tokens: option<u64>,
     /// Output/completion tokens.
     output-tokens: option<u64>,
-    /// Total tokens.
-    total-tokens: option<u64>,
     /// Input tokens served from cache.
     cache-read-tokens: option<u64>,
     /// Input tokens written to cache.
     cache-write-tokens: option<u64>,
     /// Reasoning/thinking tokens.
     reasoning-tokens: option<u64>,
-    /// How many of the calls these counts cover reported no usage at all:
-    /// for one call, 1 when its provider reported none. A call that failed
-    /// or was canceled before its provider reported usage counts here too.
-    unreported-calls: u32,
+  }
+
+  /// An incremental update streamed as the model generates.
+  variant model-delta {
+    /// A fragment of the response's content.
+    content(content-delta),
+    /// The token counts the provider has reported so far, replacing any
+    /// earlier ones.
+    usage(token-usage),
   }
 
   /// Why the model stopped generating. Each variant carries the raw provider
@@ -219,28 +222,42 @@ interface types {
     message: string,
     /// Provider/transport status code when applicable.
     status: option<u32>,
+    /// The token counts the provider reported before the call failed.
+    usage: token-usage,
   }
 
   /// The response for a `call`. The deltas stream as the model generates,
   /// and the future resolves to the `model-response` when the stream ends.
   record model-response-stream {
-    /// The model the call requested. The actual response model may differ.
-    model: string,
+    /// The model the call requested. The response model may differ.
+    request-model: string,
     /// The provider serving the call, e.g. "openai" or "ollama".
     provider: string,
     deltas: stream<model-delta>,
     %result: future<result<model-response, model-error>>,
   }
 
-  /// One earlier model call: what was sent and what the model returned.
+  /// A model call: its request and, if the call succeeded, the model's
+  /// output. An exchange whose `provider` is `none` was not sent as a call,
+  /// and its request is sent with the next call (e.g. the results of tools
+  /// the last response requested, when the agent ended before another call).`
   record model-exchange {
     request: model-request,
     /// The response's output, or `none` when the call failed, was
-    /// canceled, or dropped.
+    /// canceled, or was not sent.
     output: option<list<model-output-item>>,
     /// The output in its API's own form, if the client kept it. Keep it
     /// with the history; a client of another API uses `output` instead.
     opaque-content: option<opaque-content>,
+    /// The provider serving the call, or `none` if it was not sent.
+    provider: option<string>,
+    /// The model the call requested, or `none` if it was not sent.
+    request-model: option<string>,
+    /// The model that produced the response, if reported.
+    response-model: option<string>,
+    /// The token counts the provider reported, including those reported
+    /// before a call failed or was canceled.
+    usage: token-usage,
   }
 
   /// === Agent content and task types (mirrors A2A types) ===================
@@ -447,11 +464,6 @@ interface types {
     /// The conversation's earlier model exchanges, oldest first. Empty for
     /// a caller that does not maintain history.
     history: list<model-exchange>,
-    /// The limit on tokens the invocation's model calls may use in total,
-    /// as its `usage` counts them, or `none` when no budget limits are in
-    /// effect. An agent that doesn't enforce budgets refuses a request
-    /// that carries one.
-    token-budget: option<u64>,
   }
 
   /// A2A's `TaskStatusUpdateEvent`.
@@ -491,9 +503,7 @@ interface types {
     /// The model's last call ended for this reason.
     model(model-finish-reason),
     /// The agent reached its limit on model calls.
-    turn-limit,
-    /// The agent spent its token budget, so it made no further call.
-    budget,
+    max-turns,
   }
 
   /// The task's outcome.
@@ -503,11 +513,9 @@ interface types {
     status: task-status,
     /// The task's artifacts, assembled.
     artifacts: list<artifact>,
-    /// The model exchanges this invocation added, for the caller to keep.
-    added-history: list<model-exchange>,
-    /// Token counts across the invocation's model calls (see
-    /// `token-usage`).
-    usage: token-usage,
+    /// The model exchanges this invocation made, oldest first, for the
+    /// caller to add to the conversation's history.
+    exchanges: list<model-exchange>,
     /// Why the invocation ended, or `none` when the task's state is
     /// sufficient (e.g. `canceled`).
     finish-reason: option<agent-finish-reason>,

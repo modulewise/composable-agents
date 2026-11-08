@@ -7,9 +7,10 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use model_client_support::sse::{self, Events};
 use model_client_support::types::{
-    ContentSource, MediaData, ModelDelta, ModelError, ModelExchange, ModelFinishReason,
-    ModelInputItem, ModelOutputItem, ModelResponse, ModelSettings, OpaqueContent, Reasoning,
-    ResultContent, TokenUsage, ToolCall, ToolCallDelta, ToolChoice, ToolDefinition,
+    ContentDelta, ContentSource, MediaData, ModelDelta, ModelError, ModelExchange,
+    ModelFinishReason, ModelInputItem, ModelOutputItem, ModelResponse, ModelSettings,
+    OpaqueContent, Reasoning, ResultContent, TokenUsage, ToolCall, ToolCallDelta, ToolChoice,
+    ToolDefinition,
 };
 use model_client_support::{
     Deltas, history_input_note, json_error_position, output_media_note, tool_result_media_note,
@@ -655,17 +656,21 @@ fn parse_event(event: &sse::Event) -> Result<Event, ModelError> {
     })
 }
 
-// Applies one event to the response so far, returning its deltas. An error
-// event fails the call immediately.
+// Applies one event to the response so far, returning its deltas. An event
+// that reports token counts returns a usage delta with the counts so far. An
+// error event fails the call immediately.
 fn apply(acc: &mut Accumulator, event: Event) -> Result<Vec<ModelDelta>, ModelError> {
     Ok(match event {
         Event::MessageStart { message } => {
             acc.response_id = message.id;
             acc.model = message.model;
-            if let Some(usage) = message.usage {
-                acc.usage.update(usage);
+            match message.usage {
+                Some(usage) => {
+                    acc.usage.update(usage);
+                    vec![ModelDelta::Usage(token_usage(&acc.usage))]
+                }
+                None => Vec::new(),
             }
-            Vec::new()
         }
         Event::ContentBlockStart {
             index,
@@ -680,15 +685,15 @@ fn apply(acc: &mut Accumulator, event: Event) -> Result<Vec<ModelDelta>, ModelEr
             let (kind, delta) = match start {
                 StartBlock::Text { text } => (
                     Kind::Text,
-                    (!text.is_empty()).then_some(ModelDelta::Text(text)),
+                    (!text.is_empty()).then_some(ContentDelta::Text(text)),
                 ),
                 StartBlock::Thinking { thinking } => (
                     Kind::Thinking,
-                    (!thinking.is_empty()).then_some(ModelDelta::Reasoning(thinking)),
+                    (!thinking.is_empty()).then_some(ContentDelta::Reasoning(thinking)),
                 ),
                 StartBlock::RedactedThinking {} => (Kind::RedactedThinking, None),
                 StartBlock::ToolUse { id, name } => {
-                    let delta = ModelDelta::ToolCall(ToolCallDelta {
+                    let delta = ContentDelta::ToolCall(ToolCallDelta {
                         index,
                         id: Some(id.clone()),
                         name: Some(name.clone()),
@@ -703,14 +708,14 @@ fn apply(acc: &mut Accumulator, event: Event) -> Result<Vec<ModelDelta>, ModelEr
                 input_json: String::new(),
                 kind,
             };
-            delta.into_iter().collect()
+            delta.into_iter().map(ModelDelta::Content).collect()
         }
         Event::ContentBlockDelta { index, delta } => {
             let block = acc.block(index);
             let delta = match (&block.kind, delta) {
                 (Kind::Text, BlockDelta::TextDelta { text }) => {
                     append(&mut block.received, "text", &text);
-                    Some(ModelDelta::Text(text))
+                    Some(ContentDelta::Text(text))
                 }
                 (Kind::Text, BlockDelta::CitationsDelta { citation }) => {
                     match block.received.get_mut("citations") {
@@ -726,7 +731,7 @@ fn apply(acc: &mut Accumulator, event: Event) -> Result<Vec<ModelDelta>, ModelEr
                 }
                 (Kind::Thinking, BlockDelta::ThinkingDelta { thinking }) => {
                     append(&mut block.received, "thinking", &thinking);
-                    Some(ModelDelta::Reasoning(thinking))
+                    Some(ContentDelta::Reasoning(thinking))
                 }
                 (Kind::Thinking, BlockDelta::SignatureDelta { signature }) => {
                     if let Some(fields) = block.received.as_object_mut() {
@@ -738,7 +743,7 @@ fn apply(acc: &mut Accumulator, event: Event) -> Result<Vec<ModelDelta>, ModelEr
                 (kind, BlockDelta::InputJsonDelta { partial_json }) => {
                     block.input_json.push_str(&partial_json);
                     matches!(kind, Kind::ToolUse { .. }).then(|| {
-                        ModelDelta::ToolCall(ToolCallDelta {
+                        ContentDelta::ToolCall(ToolCallDelta {
                             index,
                             id: None,
                             name: None,
@@ -748,7 +753,7 @@ fn apply(acc: &mut Accumulator, event: Event) -> Result<Vec<ModelDelta>, ModelEr
                 }
                 _ => None,
             };
-            delta.into_iter().collect()
+            delta.into_iter().map(ModelDelta::Content).collect()
         }
         // The streamed input replaces the block's starting input. Its key order
         // is kept, so it's replayed unchanged.
@@ -771,10 +776,13 @@ fn apply(acc: &mut Accumulator, event: Event) -> Result<Vec<ModelDelta>, ModelEr
             if delta.stop_reason.is_some() {
                 acc.stop_reason = delta.stop_reason;
             }
-            if let Some(usage) = usage {
-                acc.usage.update(usage);
+            match usage {
+                Some(usage) => {
+                    acc.usage.update(usage);
+                    vec![ModelDelta::Usage(token_usage(&acc.usage))]
+                }
+                None => Vec::new(),
             }
-            Vec::new()
         }
         Event::MessageStop => {
             acc.stopped = true;
@@ -857,37 +865,38 @@ fn assemble(acc: Accumulator) -> Result<(ModelResponse, Option<Message>), ModelE
         content: Content::Received(received),
     });
 
-    let usage = acc.usage;
-    let cache_read = usage.cache_read_input_tokens;
-    let cache_write = usage.cache_creation_input_tokens;
-    // `input_tokens` counts only what follows the last cache breakpoint, so the
-    // total adds the cache read and write counts when reported.
-    let input_tokens = usage
-        .input_tokens
-        .map(|input| input + cache_read.unwrap_or(0) + cache_write.unwrap_or(0));
-    let output_tokens = usage.output_tokens;
-    let reported = input_tokens.is_some() || output_tokens.is_some();
-
     let raw = acc.stop_reason.unwrap_or_default();
     let response = ModelResponse {
         output,
         finish_reason: finish_reason(&raw),
-        usage: TokenUsage {
-            input_tokens,
-            output_tokens,
-            total_tokens: input_tokens.zip(output_tokens).map(|(i, o)| i + o),
-            cache_read_tokens: cache_read,
-            cache_write_tokens: cache_write,
-            reasoning_tokens: usage
-                .output_tokens_details
-                .and_then(|details| details.thinking_tokens),
-            unreported_calls: u32::from(!reported),
-        },
+        usage: token_usage(&acc.usage),
         response_id: acc.response_id,
         model: acc.model,
         opaque_content,
     };
     Ok((response, assistant))
+}
+
+// The token counts reported so far. `input_tokens` counts only what follows
+// the last cache breakpoint, so the input count adds the cache read and write
+// counts when reported.
+fn token_usage(usage: &Usage) -> TokenUsage {
+    let cache_read = usage.cache_read_input_tokens;
+    let cache_write = usage.cache_creation_input_tokens;
+    let input_tokens = usage
+        .input_tokens
+        .map(|input| input + cache_read.unwrap_or(0) + cache_write.unwrap_or(0));
+    let output_tokens = usage.output_tokens;
+    TokenUsage {
+        input_tokens,
+        output_tokens,
+        cache_read_tokens: cache_read,
+        cache_write_tokens: cache_write,
+        reasoning_tokens: usage
+            .output_tokens_details
+            .as_ref()
+            .and_then(|details| details.thinking_tokens),
+    }
 }
 
 fn finish_reason(raw: &str) -> ModelFinishReason {
@@ -907,6 +916,7 @@ fn failure(message: String) -> ModelError {
     ModelError {
         message,
         status: None,
+        usage: TokenUsage::default(),
     }
 }
 
@@ -1291,6 +1301,10 @@ mod tests {
             },
             output: Some(vec![ModelOutputItem::Text("It shows a cat.".to_string())]),
             opaque_content: None,
+            provider: None,
+            request_model: None,
+            response_model: None,
+            usage: TokenUsage::default(),
         }];
 
         assert_eq!(
@@ -1303,8 +1317,8 @@ mod tests {
     }
 
     #[test]
-    fn a_message_without_usage_reports_no_counts_and_one_unreported_call() {
-        let (_, outcome) = fold(&[
+    fn a_message_without_usage_reports_no_counts() {
+        let (deltas, outcome) = fold(&[
             r#"{"type": "message_start", "message": {"id": "msg_1", "model": "claude-test"}}"#,
             r#"{"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}"#,
             r#"{"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hi"}}"#,
@@ -1312,16 +1326,16 @@ mod tests {
             r#"{"type": "message_delta", "delta": {"stop_reason": "end_turn"}}"#,
             r#"{"type": "message_stop"}"#,
         ]);
+        assert!(
+            !deltas
+                .iter()
+                .any(|delta| matches!(delta, ModelDelta::Usage(_)))
+        );
         let (response, _) = outcome.unwrap();
         assert_eq!(
-            [
-                response.usage.input_tokens,
-                response.usage.output_tokens,
-                response.usage.total_tokens
-            ],
-            [None, None, None]
+            format!("{:?}", response.usage),
+            format!("{:?}", TokenUsage::default())
         );
-        assert_eq!(response.usage.unreported_calls, 1);
     }
 
     #[test]
@@ -1336,13 +1350,23 @@ mod tests {
             r#"{"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": null}, "usage": {"output_tokens": 15}}"#,
             r#"{"type": "message_stop"}"#,
         ]);
+        // Each event that reports counts gives the counts so far.
+        let counts = |output: u64| {
+            ModelDelta::Usage(TokenUsage {
+                input_tokens: Some(25),
+                output_tokens: Some(output),
+                ..TokenUsage::default()
+            })
+        };
         assert_eq!(
             format!("{deltas:?}"),
             format!(
                 "{:?}",
                 [
-                    ModelDelta::Text("Hello".into()),
-                    ModelDelta::Text("!".into())
+                    counts(1),
+                    ModelDelta::Content(ContentDelta::Text("Hello".into())),
+                    ModelDelta::Content(ContentDelta::Text("!".into())),
+                    counts(15),
                 ]
             )
         );
@@ -1357,10 +1381,8 @@ mod tests {
         );
         assert_eq!(response.usage.input_tokens, Some(25));
         assert_eq!(response.usage.output_tokens, Some(15));
-        assert_eq!(response.usage.total_tokens, Some(40));
         assert_eq!(response.usage.cache_read_tokens, None);
         assert_eq!(response.usage.reasoning_tokens, None);
-        assert_eq!(response.usage.unreported_calls, 0);
         assert_eq!(response.response_id.as_deref(), Some("msg_1"));
         assert_eq!(response.model.as_deref(), Some("claude-test"));
         assert_eq!(
@@ -1384,35 +1406,45 @@ mod tests {
             r#"{"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"output_tokens": 30, "output_tokens_details": {"thinking_tokens": 12}}}"#,
             r#"{"type": "message_stop"}"#,
         ]);
+        let content: Vec<&ModelDelta> = deltas
+            .iter()
+            .filter(|delta| matches!(delta, ModelDelta::Content(_)))
+            .collect();
         assert_eq!(
-            format!("{deltas:?}"),
+            format!("{content:?}"),
             format!(
                 "{:?}",
                 [
-                    ModelDelta::Reasoning("Add them.".into()),
-                    ModelDelta::ToolCall(ToolCallDelta {
+                    ContentDelta::Reasoning("Add them.".into()),
+                    ContentDelta::ToolCall(ToolCallDelta {
                         index: 1,
                         id: Some("toolu_1".into()),
                         name: Some("calc_add".into()),
                         arguments: String::new(),
                     }),
-                    ModelDelta::ToolCall(ToolCallDelta {
+                    ContentDelta::ToolCall(ToolCallDelta {
                         index: 1,
                         id: None,
                         name: None,
                         arguments: "{\"a\": ".into(),
                     }),
-                    ModelDelta::ToolCall(ToolCallDelta {
+                    ContentDelta::ToolCall(ToolCallDelta {
                         index: 1,
                         id: None,
                         name: None,
                         arguments: "1}".into(),
                     }),
                 ]
+                .map(ModelDelta::Content)
             )
         );
 
         let (response, assistant) = outcome.unwrap();
+        // The last usage delta has the response's counts.
+        assert_eq!(
+            format!("{:?}", deltas.last().unwrap()),
+            format!("{:?}", ModelDelta::Usage(response.usage))
+        );
         assert_eq!(
             format!("{:?}", response.output),
             format!(
@@ -1505,7 +1537,7 @@ mod tests {
         assert_eq!(
             deltas
                 .iter()
-                .filter(|delta| matches!(delta, ModelDelta::ToolCall(_)))
+                .filter(|delta| matches!(delta, ModelDelta::Content(ContentDelta::ToolCall(_))))
                 .count(),
             2
         );
@@ -1570,6 +1602,10 @@ mod tests {
                     }),
                 ]),
                 opaque_content: None,
+                provider: None,
+                request_model: None,
+                response_model: None,
+                usage: TokenUsage::default(),
             },
             ModelExchange {
                 request: ModelRequest {
@@ -1593,6 +1629,10 @@ mod tests {
                     api: "open-responses".to_string(),
                     content: "[]".to_string(),
                 }),
+                provider: None,
+                request_model: None,
+                response_model: None,
+                usage: TokenUsage::default(),
             },
         ];
 
@@ -1628,6 +1668,10 @@ mod tests {
                 api: API.to_string(),
                 content: content.to_string(),
             }),
+            provider: None,
+            request_model: None,
+            response_model: None,
+            usage: TokenUsage::default(),
         };
 
         let messages = history_to_messages(&[exchange(blocks)]).unwrap();
@@ -1657,6 +1701,10 @@ mod tests {
             },
             output: None,
             opaque_content: None,
+            provider: None,
+            request_model: None,
+            response_model: None,
+            usage: TokenUsage::default(),
         }];
 
         assert_eq!(
@@ -1680,6 +1728,10 @@ mod tests {
                 })),
             ]),
             opaque_content: None,
+            provider: None,
+            request_model: None,
+            response_model: None,
+            usage: TokenUsage::default(),
         }];
 
         assert_eq!(

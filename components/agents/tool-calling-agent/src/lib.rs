@@ -22,9 +22,9 @@ use wit_bindgen::rt::async_support::{StreamWriter, spawn_local};
 
 use agent_support::types::{
     AgentError, AgentEvent, AgentFinishReason, AgentMetadata, AgentRequest, AgentResponse,
-    AgentResponseStream, ContentSource, MediaData, ModelDelta, ModelExchange, ModelFinishReason,
-    ModelInputItem, ModelOutputItem, ModelRequest, ModelSettings, ResultContent, TaskState,
-    TaskStatus, TokenUsage, ToolCall, ToolChoice, ToolDefinition, ToolResult,
+    AgentResponseStream, ContentDelta, ContentSource, MediaData, ModelDelta, ModelExchange,
+    ModelFinishReason, ModelInputItem, ModelOutputItem, ModelRequest, ModelSettings, ResultContent,
+    TaskState, TaskStatus, TokenUsage, ToolCall, ToolChoice, ToolDefinition, ToolResult,
 };
 use agent_support::{
     INSTRUCTIONS_CONFIG, INTERNAL_ERROR, INVALID_PARAMS, OCTET_STREAM, ReasoningRun, TaskIds,
@@ -49,14 +49,6 @@ impl exports::composable::agents::agent::Guest for Component {
     }
 
     async fn invoke(request: AgentRequest) -> Result<AgentResponseStream, AgentError> {
-        // This agent refuses a token budget it cannot enforce.
-        if request.token_budget.is_some() {
-            return Err(AgentError {
-                code: INVALID_PARAMS,
-                message: "this agent does not enforce token budgets yet".to_string(),
-                data: None,
-            });
-        }
         let input = model_input(&request.message.parts);
         if input.is_empty() {
             return Err(AgentError {
@@ -166,7 +158,6 @@ async fn run(
         session,
         ids,
         artifact: TextArtifact::new(new_id()),
-        usage: no_usage(),
         pending_calls: VecDeque::new(),
         results: Vec::new(),
     };
@@ -187,7 +178,6 @@ async fn run(
         {
             Ok(stream) => stream,
             Err(e) => {
-                task.usage.unreported_calls += 1;
                 let message = format!("the model call failed: {}", e.message);
                 return task
                     .finish(&mut events, TaskState::Failed, None, Some(message))
@@ -199,13 +189,14 @@ async fn run(
         let mut streamed_text = false;
         let mut deltas = stream.deltas.into_stream();
         while let Some(delta) = deltas.next().await {
-            // A run of reasoning ends at the next delta of another kind.
+            // A run of reasoning ends at the next content delta of another
+            // kind.
             let ready: Vec<AgentEvent> = match delta {
-                ModelDelta::Reasoning(chunk) => {
+                ModelDelta::Content(ContentDelta::Reasoning(chunk)) => {
                     reasoning.push(chunk);
                     Vec::new()
                 }
-                ModelDelta::Text(chunk) => {
+                ModelDelta::Content(ContentDelta::Text(chunk)) => {
                     streamed_text = true;
                     let ended = reasoning.finish(ids);
                     ended
@@ -213,34 +204,31 @@ async fn run(
                         .chain(task.artifact.push(chunk, ids))
                         .collect()
                 }
-                ModelDelta::ToolCall(_) => reasoning.finish(ids).into_iter().collect(),
+                ModelDelta::Content(ContentDelta::ToolCall(_)) => {
+                    reasoning.finish(ids).into_iter().collect()
+                }
+                // The session records the counts in the call's exchange.
+                ModelDelta::Usage(_) => Vec::new(),
             };
             if !send_all(&mut events, ready).await {
                 drop(deltas);
-                task.usage.unreported_calls += 1;
                 return task.end(TaskState::Canceled, None, None);
             }
         }
         // A run of reasoning also ends with the stream.
         if !send_all(&mut events, reasoning.finish(ids).into_iter().collect()).await {
-            task.usage.unreported_calls += 1;
             return task.end(TaskState::Canceled, None, None);
         }
 
         let response = match stream.result.await {
             Ok(response) => response,
             Err(e) => {
-                task.usage.unreported_calls += 1;
                 let message = format!("the model call failed: {}", e.message);
                 return task
                     .finish(&mut events, TaskState::Failed, None, Some(message))
                     .await;
             }
         };
-        task.usage = add_usage(
-            std::mem::replace(&mut task.usage, no_usage()),
-            response.usage,
-        );
         task.pending_calls = tool_calls(&response.output);
         // If no reasoning deltas were streamed, send each run of reasoning in
         // the output as a status message, before the text.
@@ -278,14 +266,6 @@ async fn run(
                     .await;
             }
         }
-        if turn == options.max_turns.get() {
-            let message = format!("the agent reached its limit of {turn} model calls");
-            let reason = Some(AgentFinishReason::TurnLimit);
-            return task
-                .finish(&mut events, TaskState::Failed, reason, Some(message))
-                .await;
-        }
-
         while let Some(call) = task.pending_calls.pop_front() {
             if options.report_tool_calls
                 && !send(&mut events, tool_call_event(ids, &call.name)).await
@@ -294,6 +274,15 @@ async fn run(
                 return task.end(TaskState::Canceled, None, None);
             }
             task.results.push(call_tool(&call).await);
+        }
+        // At the turn limit, the results go in the closing exchange instead of
+        // another model call.
+        if turn == options.max_turns.get() {
+            let message = format!("the agent reached its limit of {turn} model calls");
+            let reason = Some(AgentFinishReason::MaxTurns);
+            return task
+                .finish(&mut events, TaskState::Failed, reason, Some(message))
+                .await;
         }
         if !send(&mut events, status_event(ids, TaskState::Working, None)).await {
             return task.end(TaskState::Canceled, None, None);
@@ -308,9 +297,6 @@ struct Task<'a> {
     session: Session,
     ids: &'a TaskIds,
     artifact: TextArtifact,
-    // Token counts summed across the responses so far, with the calls that
-    // reported no usage.
-    usage: TokenUsage,
     // The last response's tool calls that haven't run.
     pending_calls: VecDeque<ToolCall>,
     // The results of the tools that ran, not yet sent to the model.
@@ -339,17 +325,20 @@ impl Task<'_> {
     }
 
     // The outcome of a task that ended in `state`, with `message` as its
-    // status message. Includes its artifact as sent, the exchanges its model
-    // calls made and any closing exchange, and the summed usage.
+    // status message. Includes its artifact as sent, and the exchanges its
+    // model calls made and any closing exchange.
     fn end(
         self,
         state: TaskState,
         finish_reason: Option<AgentFinishReason>,
         message: Option<String>,
     ) -> AgentResponse {
-        let not_run = not_run_reason(state, finish_reason.as_ref());
-        let mut added_history = self.session.exchanges();
-        added_history.extend(closing_exchange(self.results, &self.pending_calls, not_run));
+        let mut exchanges = self.session.exchanges();
+        exchanges.extend(closing_exchange(
+            self.results,
+            &self.pending_calls,
+            not_run_reason(state),
+        ));
         AgentResponse {
             status: TaskStatus {
                 state,
@@ -357,25 +346,23 @@ impl Task<'_> {
                 timestamp: None,
             },
             artifacts: self.artifact.into_artifact().into_iter().collect(),
-            added_history,
-            usage: self.usage,
+            exchanges,
             finish_reason,
         }
     }
 }
 
 // Why the pending tool calls of a task that ended in `state` didn't run.
-fn not_run_reason(state: TaskState, finish_reason: Option<&AgentFinishReason>) -> &'static str {
-    match (state, finish_reason) {
-        (TaskState::Canceled, _) => "the task was canceled",
-        (_, Some(AgentFinishReason::TurnLimit)) => "the agent reached its turn limit",
+fn not_run_reason(state: TaskState) -> &'static str {
+    match state {
+        TaskState::Canceled => "the task was canceled",
         _ => "the model's response ended without requesting tools",
     }
 }
 
 // The results of the tools that ran and an error result for each pending
-// call, as an exchange that answers the last response's tool calls. `None` if
-// there are neither.
+// call, as an exchange that answers the last response's tool calls and is not
+// sent as a call. `None` if there are neither.
 fn closing_exchange(
     mut results: Vec<ModelInputItem>,
     pending_calls: &VecDeque<ToolCall>,
@@ -396,38 +383,11 @@ fn closing_exchange(
         },
         output: None,
         opaque_content: None,
+        provider: None,
+        request_model: None,
+        response_model: None,
+        usage: TokenUsage::default(),
     })
-}
-
-// Usage with no counts and no unreported calls.
-fn no_usage() -> TokenUsage {
-    TokenUsage {
-        input_tokens: None,
-        output_tokens: None,
-        total_tokens: None,
-        cache_read_tokens: None,
-        cache_write_tokens: None,
-        reasoning_tokens: None,
-        unreported_calls: 0,
-    }
-}
-
-// Adds a response's usage to the total. A count stays `None` until a response
-// reports it.
-fn add_usage(total: TokenUsage, usage: TokenUsage) -> TokenUsage {
-    let sum = |a: Option<u64>, b: Option<u64>| match (a, b) {
-        (Some(a), Some(b)) => Some(a + b),
-        (a, b) => a.or(b),
-    };
-    TokenUsage {
-        input_tokens: sum(total.input_tokens, usage.input_tokens),
-        output_tokens: sum(total.output_tokens, usage.output_tokens),
-        total_tokens: sum(total.total_tokens, usage.total_tokens),
-        cache_read_tokens: sum(total.cache_read_tokens, usage.cache_read_tokens),
-        cache_write_tokens: sum(total.cache_write_tokens, usage.cache_write_tokens),
-        reasoning_tokens: sum(total.reasoning_tokens, usage.reasoning_tokens),
-        unreported_calls: total.unreported_calls + usage.unreported_calls,
-    }
 }
 
 // The tool calls in a response's output, in order.
@@ -519,45 +479,6 @@ mod tests {
         }
     }
 
-    fn usage(input: Option<u64>, output: Option<u64>, reasoning: Option<u64>) -> TokenUsage {
-        TokenUsage {
-            input_tokens: input,
-            output_tokens: output,
-            total_tokens: input.zip(output).map(|(i, o)| i + o),
-            reasoning_tokens: reasoning,
-            ..no_usage()
-        }
-    }
-
-    #[test]
-    fn usage_sums_each_count_over_the_responses_that_reported_it() {
-        let total = add_usage(no_usage(), usage(Some(10), Some(5), Some(2)));
-        let total = add_usage(total, usage(Some(20), Some(7), None));
-        // A response that reported no usage.
-        let total = add_usage(
-            total,
-            TokenUsage {
-                unreported_calls: 1,
-                ..no_usage()
-            },
-        );
-        assert_eq!(
-            format!("{total:?}"),
-            format!(
-                "{:?}",
-                TokenUsage {
-                    input_tokens: Some(30),
-                    output_tokens: Some(12),
-                    total_tokens: Some(42),
-                    cache_read_tokens: None,
-                    cache_write_tokens: None,
-                    reasoning_tokens: Some(2),
-                    unreported_calls: 1,
-                }
-            )
-        );
-    }
-
     #[test]
     fn the_closing_exchange_answers_every_pending_call() {
         let ran = ModelInputItem::ToolResult(ToolResult {
@@ -573,6 +494,9 @@ mod tests {
 
         assert!(exchange.output.is_none());
         assert!(exchange.opaque_content.is_none());
+        // It is not sent as a call.
+        assert!(exchange.provider.is_none());
+        assert!(exchange.request_model.is_none());
         let expected = vec![
             ran,
             ModelInputItem::ToolResult(ToolResult {
@@ -597,18 +521,9 @@ mod tests {
 
     #[test]
     fn pending_calls_reason_for_not_running_matches_the_reason_the_task_ended() {
+        assert_eq!(not_run_reason(TaskState::Canceled), "the task was canceled");
         assert_eq!(
-            not_run_reason(TaskState::Canceled, None),
-            "the task was canceled"
-        );
-        assert_eq!(
-            not_run_reason(TaskState::Failed, Some(&AgentFinishReason::TurnLimit)),
-            "the agent reached its turn limit"
-        );
-        let truncated =
-            AgentFinishReason::Model(ModelFinishReason::Truncated("length".to_string()));
-        assert_eq!(
-            not_run_reason(TaskState::Completed, Some(&truncated)),
+            not_run_reason(TaskState::Completed),
             "the model's response ended without requesting tools"
         );
     }

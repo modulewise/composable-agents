@@ -10,7 +10,7 @@ use composable_agents::types::{
     AgentEvent, AgentFinishReason, AgentRequest, Message, ModelFinishReason, Part, PartContent,
     Role, TaskState, TaskStatus, TokenUsage,
 };
-use composable_agents::{AgentHost, AgentService};
+use composable_agents::{AgentHost, AgentService, ModelUsage, usage_by_model};
 use composable_otel::OtelService;
 use composable_runtime::Runtime;
 use composable_tools::ToolService;
@@ -118,7 +118,13 @@ async fn invoke(host: &AgentHost, agent: &str, text: String) -> Result<ExitCode>
     if let Some(reason) = &response.finish_reason {
         eprintln!("finish reason: {}", finish_reason(reason));
     }
-    eprintln!("usage: {}", usage(&response.usage));
+    let usage = usage_by_model(&response.exchanges);
+    if usage.is_empty() {
+        eprintln!("usage: no model calls");
+    }
+    for model_usage in &usage {
+        eprintln!("usage: {}", usage_line(model_usage));
+    }
     if response.status.state == TaskState::Completed {
         Ok(ExitCode::SUCCESS)
     } else {
@@ -174,7 +180,6 @@ fn request(text: String) -> AgentRequest {
         task_status: None,
         related_tasks: Vec::new(),
         history: Vec::new(),
-        token_budget: None,
     }
 }
 
@@ -302,8 +307,7 @@ fn is_reasoning(message: &Message) -> bool {
 // model's reason.
 fn finish_reason(reason: &AgentFinishReason) -> String {
     let (case, raw) = match reason {
-        AgentFinishReason::TurnLimit => return "turn-limit".to_string(),
-        AgentFinishReason::Budget => return "budget".to_string(),
+        AgentFinishReason::MaxTurns => return "max-turns".to_string(),
         AgentFinishReason::Model(reason) => match reason {
             ModelFinishReason::Completed(raw) => ("completed", raw),
             ModelFinishReason::ToolRequested(raw) => ("tool-requested", raw),
@@ -317,25 +321,38 @@ fn finish_reason(reason: &AgentFinishReason) -> String {
     format!("{case} ({raw})")
 }
 
-// The reported token counts, then how many calls reported none.
-fn usage(usage: &TokenUsage) -> String {
+// A provider and model, its calls (and how many were incomplete), and the
+// counts they reported.
+fn usage_line(model_usage: &ModelUsage) -> String {
+    let calls = match model_usage.calls {
+        1 => "1 call".to_string(),
+        calls => format!("{calls} calls"),
+    };
+    let calls = match model_usage.incomplete_calls {
+        0 => calls,
+        incomplete => format!("{calls}, {incomplete} incomplete"),
+    };
+    format!(
+        "{} {} ({calls}): {}",
+        model_usage.provider,
+        model_usage.model,
+        counts(&model_usage.usage)
+    )
+}
+
+// The reported token counts.
+fn counts(usage: &TokenUsage) -> String {
     let counts = [
         ("input", usage.input_tokens),
         ("output", usage.output_tokens),
-        ("total", usage.total_tokens),
         ("cache-read", usage.cache_read_tokens),
         ("cache-write", usage.cache_write_tokens),
         ("reasoning", usage.reasoning_tokens),
     ];
-    let mut reported: Vec<String> = counts
+    let reported: Vec<String> = counts
         .into_iter()
         .filter_map(|(name, count)| count.map(|count| format!("{name} {count}")))
         .collect();
-    match usage.unreported_calls {
-        0 => {}
-        1 => reported.push("1 call unreported".to_string()),
-        calls => reported.push(format!("{calls} calls unreported")),
-    }
     if reported.is_empty() {
         "none reported".to_string()
     } else {
@@ -386,18 +403,6 @@ mod tests {
         }
     }
 
-    fn no_usage() -> TokenUsage {
-        TokenUsage {
-            input_tokens: None,
-            output_tokens: None,
-            total_tokens: None,
-            cache_read_tokens: None,
-            cache_write_tokens: None,
-            reasoning_tokens: None,
-            unreported_calls: 0,
-        }
-    }
-
     #[test]
     fn a_request_is_a_user_message_with_one_text_part_for_a_new_task() {
         let request = request("Hello".to_string());
@@ -416,7 +421,6 @@ mod tests {
         assert_eq!(request.task_id, None);
         assert_eq!(request.context_id, None);
         assert!(request.history.is_empty());
-        assert_eq!(request.token_budget, None);
     }
 
     #[test]
@@ -498,22 +502,33 @@ mod tests {
     fn a_finish_reason_includes_the_providers_value() {
         let reason = AgentFinishReason::Model(ModelFinishReason::Completed("stop".to_string()));
         assert_eq!(finish_reason(&reason), "completed (stop)");
-        assert_eq!(finish_reason(&AgentFinishReason::TurnLimit), "turn-limit");
+        assert_eq!(finish_reason(&AgentFinishReason::MaxTurns), "max-turns");
     }
 
     #[test]
-    fn usage_shows_only_reported_counts_and_unreported_calls() {
-        assert_eq!(usage(&no_usage()), "none reported");
-        let reported = TokenUsage {
-            input_tokens: Some(12),
-            output_tokens: Some(34),
-            total_tokens: Some(46),
-            unreported_calls: 1,
-            ..no_usage()
+    fn a_usage_line_shows_the_calls_and_only_the_reported_counts() {
+        let mut model_usage = ModelUsage {
+            provider: "openai".to_string(),
+            model: "gpt-5.4-mini".to_string(),
+            calls: 1,
+            incomplete_calls: 0,
+            usage: TokenUsage::default(),
         };
         assert_eq!(
-            usage(&reported),
-            "input 12, output 34, total 46, 1 call unreported"
+            usage_line(&model_usage),
+            "openai gpt-5.4-mini (1 call): none reported"
+        );
+
+        model_usage.calls = 3;
+        model_usage.incomplete_calls = 1;
+        model_usage.usage = TokenUsage {
+            input_tokens: Some(12),
+            output_tokens: Some(34),
+            ..TokenUsage::default()
+        };
+        assert_eq!(
+            usage_line(&model_usage),
+            "openai gpt-5.4-mini (3 calls, 1 incomplete): input 12, output 34"
         );
     }
 }

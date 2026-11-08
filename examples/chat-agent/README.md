@@ -50,7 +50,7 @@ status: working
 The sky looks blue because...
 status: completed
 finish reason: completed (stop)
-usage: input 88, output 84, total 172, cache-read 0
+usage: ollama gemma4:31b (1 call): input 29, output 341, cache-read 0
 ```
 
 The message can also be piped to stdin:

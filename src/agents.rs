@@ -324,7 +324,6 @@ mod tests {
             task_status: None,
             related_tasks: Vec::new(),
             history: Vec::new(),
-            token_budget: None,
         }
     }
 
