@@ -36,6 +36,8 @@ pub trait Client: 'static {
     const DEFAULT_BASE_URL: &'static str;
     /// The endpoint's path under the base URL.
     const PATH: &'static str;
+    /// The client's default output limit. None means no limit is sent.
+    const DEFAULT_MAX_TOKENS: Option<u32> = None;
 
     /// Reads the client's own config. Fails on a missing or invalid value.
     fn config() -> Result<Self::Config, ModelError>;
@@ -56,7 +58,7 @@ pub trait Client: 'static {
     }
 
     /// The initial state, from the settings and earlier exchanges. Fails on
-    /// history the client can't use.
+    /// history the client can't use, or settings it can't send.
     fn start(
         settings: &ModelSettings,
         history: &[ModelExchange],
@@ -66,12 +68,10 @@ pub trait Client: 'static {
     /// send, before the call is recorded.
     fn add_input(state: &mut Self::State, input: &[ModelInputItem]) -> Result<(), ModelError>;
 
-    /// The request body for a call. `max_tokens` is the call's limit, else the
-    /// session's, else the configured one.
+    /// The request body for a call, with `max_tokens` as its limit, if any.
     fn request(
         model: &str,
         state: &Self::State,
-        settings: &ModelSettings,
         config: &Self::Config,
         max_tokens: Option<u32>,
     ) -> Result<Vec<u8>, ModelError>;
@@ -163,15 +163,26 @@ impl<C: Client> Session<C> {
     }
 
     pub async fn call(&self, request: ModelRequest) -> Result<ModelResponseStream, ModelError> {
-        // Add the input to the state and record the exchange. Its output and
-        // counts are set as the response is read. Unsendable input fails the
-        // call before it's recorded.
+        // Check the server, add the input to the state, and build the body. A
+        // failure here fails the call before it's recorded or sent.
+        let server = self.common.server()?;
         C::add_input(&mut self.state.borrow_mut(), &sent_input(&request.input))?;
-        // The call's limit, else the session's, else the configured one.
+        // The call's limit, else the session's, else the configured one, else
+        // the client's default.
         let max_tokens = request
             .max_tokens
             .or(self.settings.max_tokens)
-            .or(self.common.max_tokens);
+            .or(self.common.max_tokens)
+            .or(C::DEFAULT_MAX_TOKENS);
+        let body = C::request(
+            &self.common.model,
+            &self.state.borrow(),
+            &self.config,
+            max_tokens,
+        )?;
+
+        // Record the exchange. Its output and counts are set as the response
+        // is read.
         let exchange = Rc::new(RefCell::new(ModelExchange {
             request,
             output: None,
@@ -183,28 +194,14 @@ impl<C: Client> Session<C> {
         }));
         self.exchanges.borrow_mut().push(exchange.clone());
 
-        let body = C::request(
-            &self.common.model,
-            &self.state.borrow(),
-            &self.settings,
-            &self.config,
-            max_tokens,
-        )?;
+        // Send the request and read the response in a spawned task that writes
+        // the deltas, assembles the response, updates the state, and resolves
+        // the outcome. A response's output (with the original tool names),
+        // opaque content, model, and counts are recorded in the exchange. A
+        // failure sending or reading gets the counts recorded before it.
+        let endpoint = self.common.endpoint(C::PATH);
         let headers = C::headers(self.common.api_key.as_deref());
-        let response = send_request(
-            &self.common.endpoint(C::PATH),
-            &headers,
-            body,
-            C::max_retries(&self.config),
-            C::sleep,
-        )
-        .await?;
-
-        // Read the response in a spawned task: write the deltas, assemble the
-        // response, update the state, and resolve the outcome. A response's
-        // output (with the original tool names), opaque content, model and
-        // counts are recorded in the exchange. A failure gets the counts
-        // that were recorded before it occurred.
+        let max_retries = C::max_retries(&self.config);
         let (delta_tx, delta_rx) = C::delta_stream();
         let (outcome_tx, outcome_rx) = C::outcome_future(|| {
             Err(ModelError {
@@ -222,7 +219,11 @@ impl<C: Client> Session<C> {
                 names: names.clone(),
                 exchange: exchange.clone(),
             };
-            let outcome = C::read_response(response.body, &mut deltas).await;
+            let outcome = match send_request(&endpoint, &headers, body, max_retries, C::sleep).await
+            {
+                Ok(response) => C::read_response(response.body, &mut deltas).await,
+                Err(error) => Err(error),
+            };
             drop(deltas);
             let outcome = match outcome {
                 Ok((mut response, output)) => {
@@ -246,6 +247,8 @@ impl<C: Client> Session<C> {
         Ok(ModelResponseStream {
             request_model: self.common.model.clone(),
             provider: self.common.provider.clone(),
+            server: Some(server),
+            max_tokens,
             deltas: delta_rx,
             result: outcome_rx,
         })

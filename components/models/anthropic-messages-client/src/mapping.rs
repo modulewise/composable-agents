@@ -251,21 +251,22 @@ fn output_items_to_message(output: &[ModelOutputItem]) -> Option<Message> {
 #[derive(Serialize)]
 struct MessagesRequest<'a> {
     model: &'a str,
-    max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<&'a str>,
     messages: &'a [Message],
     stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    stop_sequences: Option<Vec<String>>,
+    stop_sequences: Option<&'a [String]>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<Tool>>,
+    tools: Option<&'a [Tool]>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tool_choice: Option<Value>,
+    tool_choice: Option<&'a Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<Thinking>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    output_config: Option<OutputConfig>,
+    output_config: Option<OutputConfig<'a>>,
 }
 
 // `thinking`, sent when `include-reasoning` is true: adaptive thinking with
@@ -310,11 +311,11 @@ pub(crate) const EFFORT_VALUES: &str = "one of low, medium, high, xhigh or max";
 
 // `output_config`, sent when either part is set.
 #[derive(Serialize)]
-struct OutputConfig {
+struct OutputConfig<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     effort: Option<Effort>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    format: Option<OutputFormat>,
+    format: Option<&'a OutputFormat>,
 }
 
 // Structured output: `{"type":"json_schema","schema":{...}}`.
@@ -344,48 +345,68 @@ struct Tool {
     input_schema: Value,
 }
 
-/// The request body for one call, with the instructions as `system`.
-/// `temperature`, `top-p`, `top-k` and `seed` aren't sent: the API rejects the
-/// first three and has no `seed`.
+/// A session's settings in Messages API form, with the instructions as
+/// `system`. `temperature`, `top-p`, `top-k` and `seed` aren't sent, because
+/// the API rejects the first three and has no `seed`.
+pub(crate) struct ApiSettings {
+    system: Option<String>,
+    stop_sequences: Option<Vec<String>>,
+    tools: Option<Vec<Tool>>,
+    tool_choice: Option<Value>,
+    format: Option<OutputFormat>,
+}
+
+impl ApiSettings {
+    /// Fails on an invalid input-schema or output-schema.
+    pub(crate) fn new(settings: &ModelSettings) -> Result<Self, ModelError> {
+        Ok(ApiSettings {
+            system: settings
+                .instructions
+                .clone()
+                .filter(|instructions| !instructions.is_empty()),
+            stop_sequences: settings.stop_sequences.clone(),
+            tools: settings
+                .tools
+                .as_ref()
+                .map(|definitions| {
+                    definitions
+                        .iter()
+                        .map(to_tool)
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?,
+            tool_choice: settings.tool_choice.as_ref().map(to_tool_choice),
+            format: settings
+                .output_schema
+                .as_deref()
+                .map(output_format)
+                .transpose()?,
+        })
+    }
+}
+
+/// The request body for one call.
 pub(crate) fn build_request(
     model: &str,
     history: &[Message],
-    settings: &ModelSettings,
+    api_settings: &ApiSettings,
     effort: Option<Effort>,
     include_reasoning: bool,
-    max_tokens: u32,
+    max_tokens: Option<u32>,
 ) -> Result<Vec<u8>, ModelError> {
-    let tools = settings
-        .tools
-        .as_ref()
-        .map(|definitions| {
-            definitions
-                .iter()
-                .map(to_tool)
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .transpose()?;
-    let tool_choice = settings.tool_choice.as_ref().map(to_tool_choice);
-    let format = settings
-        .output_schema
-        .as_deref()
-        .map(output_format)
-        .transpose()?;
+    let format = api_settings.format.as_ref();
     let output_config =
         (effort.is_some() || format.is_some()).then_some(OutputConfig { effort, format });
 
     let request = MessagesRequest {
         model,
         max_tokens,
-        system: settings
-            .instructions
-            .as_deref()
-            .filter(|instructions| !instructions.is_empty()),
+        system: api_settings.system.as_deref(),
         messages: history,
         stream: true,
-        stop_sequences: settings.stop_sequences.clone(),
-        tools,
-        tool_choice,
+        stop_sequences: api_settings.stop_sequences.as_deref(),
+        tools: api_settings.tools.as_deref(),
+        tool_choice: api_settings.tool_choice.as_ref(),
         thinking: include_reasoning.then_some(Thinking {
             kind: "adaptive",
             display: "summarized",
@@ -396,7 +417,7 @@ pub(crate) fn build_request(
 }
 
 // A tool definition in Messages API form, with its input schema parsed into
-// JSON. An invalid schema fails the request.
+// JSON. An invalid schema fails the session.
 fn to_tool(definition: &ToolDefinition) -> Result<Tool, ModelError> {
     let input_schema = serde_json::from_str(&definition.input_schema).map_err(|e| {
         failure(format!(
@@ -955,7 +976,15 @@ mod tests {
     }
 
     fn request(settings: &ModelSettings, history: &[Message]) -> Value {
-        let body = build_request("claude-test", history, settings, None, false, 4096);
+        let api_settings = ApiSettings::new(settings).unwrap();
+        let body = build_request(
+            "claude-test",
+            history,
+            &api_settings,
+            None,
+            false,
+            Some(4096),
+        );
         serde_json::from_slice(&body.unwrap()).unwrap()
     }
 
@@ -1020,10 +1049,10 @@ mod tests {
                 &build_request(
                     "claude-test",
                     &[],
-                    &settings(),
+                    &ApiSettings::new(&settings()).unwrap(),
                     None,
                     include_reasoning,
-                    4096,
+                    Some(4096),
                 )
                 .unwrap(),
             )
@@ -1045,7 +1074,15 @@ mod tests {
         };
         let body = |settings: &ModelSettings, effort| -> Value {
             serde_json::from_slice(
-                &build_request("claude-test", &[], settings, effort, false, 4096).unwrap(),
+                &build_request(
+                    "claude-test",
+                    &[],
+                    &ApiSettings::new(settings).unwrap(),
+                    effort,
+                    false,
+                    Some(4096),
+                )
+                .unwrap(),
             )
             .unwrap()
         };
@@ -1072,7 +1109,7 @@ mod tests {
             output_schema: Some("{not json".to_string()),
             ..settings()
         };
-        let error = build_request("claude-test", &[], &invalid, None, false, 4096).unwrap_err();
+        let error = ApiSettings::new(&invalid).err().unwrap();
         assert!(
             error
                 .message

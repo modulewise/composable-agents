@@ -16,11 +16,16 @@ Agents ([`composable:agents`](../agents)) call a model through `client`.
 A `session` serves one agent invocation:
 
 - **`constructor(settings, history)`** takes the caller's `model-settings` and
-  the conversation's earlier exchanges, and fails on history it cannot use.
+  the conversation's earlier exchanges, and fails on history or settings it
+  cannot send, or an invalid `base-url`.
 - **`call(request)`** makes one model call and returns the response as it
-  arrives, with a stream of deltas (content fragments and token counts) and a
-  future of the final `model-response`. A request's `max-tokens` limits the
-  call, taking precedence over the session's.
+  arrives, with the provider, the requested model, the server it's sent to, the
+  `max-tokens` sent, a stream of deltas (content fragments and token counts)
+  and a future of the final `model-response`. A request's `max-tokens` limits
+  the call, taking precedence over the session's, then the config's, then the
+  client's default. `call` fails only on input it cannot send, with nothing
+  sent or recorded. A failure sending the request or reading the response
+  resolves the future.
 - **`exchanges()`** returns the calls made within the session (each request
   with its output, provider, models, and token counts), for the caller to add
   to the conversation's history.
