@@ -194,11 +194,11 @@ impl<C: Client> Session<C> {
         }));
         self.exchanges.borrow_mut().push(exchange.clone());
 
-        // Send the request and read the response in a spawned task: write the
-        // deltas, assemble the response, update the state, and resolve the
-        // outcome. A response's output (with the original tool names), opaque
-        // content, model and counts are recorded in the exchange. A failure
-        // sending or reading gets the counts recorded before it.
+        // Send the request and read the response in a spawned task that writes
+        // the deltas, assembles the response, updates the state, and resolves
+        // the outcome. A response's output (with the original tool names),
+        // opaque content, model, and counts are recorded in the exchange. A
+        // failure sending or reading gets the counts recorded before it.
         let endpoint = self.common.endpoint(C::PATH);
         let headers = C::headers(self.common.api_key.as_deref());
         let max_retries = C::max_retries(&self.config);

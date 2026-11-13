@@ -346,8 +346,8 @@ struct Tool {
 }
 
 /// A session's settings in Messages API form, with the instructions as
-/// `system`. `temperature`, `top-p`, `top-k` and `seed` aren't sent: the API
-/// rejects the first three and has no `seed`.
+/// `system`. `temperature`, `top-p`, `top-k` and `seed` aren't sent, because
+/// the API rejects the first three and has no `seed`.
 pub(crate) struct ApiSettings {
     system: Option<String>,
     stop_sequences: Option<Vec<String>>,

@@ -2,7 +2,7 @@
 
 use std::str::FromStr;
 
-use url::{Host, Url};
+use url::{Host, ParseError, Url};
 
 use crate::composable::models::types::{ModelError, Server, TokenUsage};
 
@@ -31,7 +31,7 @@ impl CommonConfig {
             model: required_config(MODEL_CONFIG)?,
             provider: required_config(PROVIDER_CONFIG)?,
             base_url: Url::parse(&base_url)
-                .map_err(|e| base_url_error(format!("is not a valid URL: {e}")))?,
+                .map_err(|e| base_url_error("is not a valid URL", Some(e)))?,
             api_key: get_config(API_KEY_CONFIG),
             max_tokens: parsed_config(MAX_TOKENS_CONFIG, "a number")?,
         })
@@ -49,12 +49,12 @@ impl CommonConfig {
             Some(Host::Domain(domain)) => domain.to_string(),
             Some(Host::Ipv4(ip)) => ip.to_string(),
             Some(Host::Ipv6(ip)) => ip.to_string(),
-            None => return Err(base_url_error("has no host".to_string())),
+            None => return Err(base_url_error("has no host", None)),
         };
         let port = self
             .base_url
             .port_or_known_default()
-            .ok_or_else(|| base_url_error("has no port".to_string()))?;
+            .ok_or_else(|| base_url_error("has no port", None))?;
         Ok(Server { address, port })
     }
 }
@@ -87,10 +87,15 @@ pub fn parsed_config<T: FromStr>(key: &str, expected: &str) -> Result<Option<T>,
         .transpose()
 }
 
-// An error with the base URL. It doesn't include the URL.
-fn base_url_error(reason: String) -> ModelError {
+// An error about `base-url`. Its message has only `reason` and the parse
+// error's description.
+fn base_url_error(reason: &'static str, cause: Option<ParseError>) -> ModelError {
+    let message = match cause {
+        Some(cause) => format!("'{BASE_URL_CONFIG}' {reason}: {cause}"),
+        None => format!("'{BASE_URL_CONFIG}' {reason}"),
+    };
     ModelError {
-        message: format!("'{BASE_URL_CONFIG}' {reason}"),
+        message,
         status: None,
         usage: TokenUsage::default(),
     }

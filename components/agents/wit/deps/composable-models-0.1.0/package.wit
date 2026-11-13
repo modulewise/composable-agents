@@ -218,7 +218,7 @@ interface types {
 
   /// Where a call is sent.
   record server {
-    /// The host: a domain name or an IP address.
+    /// The host as a domain name or an IP address.
     address: string,
     /// The port, or the scheme's default when the URL does not have one.
     port: u16,
