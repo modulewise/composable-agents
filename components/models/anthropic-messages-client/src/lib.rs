@@ -33,10 +33,6 @@ const MAX_RETRIES_CONFIG: &str = "max-retries";
 // Retries when `max-retries` isn't configured.
 const DEFAULT_MAX_RETRIES: u32 = 2;
 
-// The default `max_tokens`, which the Messages API requires. It leaves room
-// for thinking, which counts toward it.
-const DEFAULT_MAX_TOKENS: u32 = 64000;
-
 // The Messages API version this client speaks.
 const ANTHROPIC_VERSION: &str = "2026-10-21";
 
@@ -51,14 +47,23 @@ struct MessagesConfig {
     max_retries: u32,
 }
 
+/// The conversation and the session's settings, in Messages API form.
+struct MessagesState {
+    messages: Vec<mapping::Message>,
+    api_settings: mapping::ApiSettings,
+}
+
 impl Client for MessagesClient {
     type Config = MessagesConfig;
-    type State = Vec<mapping::Message>;
+    type State = MessagesState;
     // The assistant turn, if the response has content.
     type Output = Option<mapping::Message>;
 
     const DEFAULT_BASE_URL: &'static str = "https://api.anthropic.com/v1";
     const PATH: &'static str = "/messages";
+    // The Messages API requires `max_tokens`. This leaves room for thinking,
+    // which counts toward it.
+    const DEFAULT_MAX_TOKENS: Option<u32> = Some(64000);
 
     fn config() -> Result<MessagesConfig, ModelError> {
         Ok(MessagesConfig {
@@ -94,35 +99,36 @@ impl Client for MessagesClient {
     }
 
     fn start(
-        _settings: &ModelSettings,
+        settings: &ModelSettings,
         history: &[ModelExchange],
-    ) -> Result<Vec<mapping::Message>, ModelError> {
+    ) -> Result<MessagesState, ModelError> {
         require_answered_tool_calls(history)?;
-        mapping::history_to_messages(history)
+        Ok(MessagesState {
+            messages: mapping::history_to_messages(history)?,
+            api_settings: mapping::ApiSettings::new(settings)?,
+        })
     }
 
-    fn add_input(
-        state: &mut Vec<mapping::Message>,
-        input: &[ModelInputItem],
-    ) -> Result<(), ModelError> {
-        state.extend(mapping::input_items_to_message(input)?);
+    fn add_input(state: &mut MessagesState, input: &[ModelInputItem]) -> Result<(), ModelError> {
+        state
+            .messages
+            .extend(mapping::input_items_to_message(input)?);
         Ok(())
     }
 
     fn request(
         model: &str,
-        state: &Vec<mapping::Message>,
-        settings: &ModelSettings,
+        state: &MessagesState,
         config: &MessagesConfig,
         max_tokens: Option<u32>,
     ) -> Result<Vec<u8>, ModelError> {
         mapping::build_request(
             model,
-            state,
-            settings,
+            &state.messages,
+            &state.api_settings,
             config.effort,
             config.include_reasoning,
-            max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
+            max_tokens,
         )
     }
 
@@ -133,8 +139,8 @@ impl Client for MessagesClient {
         mapping::stream_response(body, deltas).await
     }
 
-    fn add_output(state: &mut Vec<mapping::Message>, output: Option<mapping::Message>) {
-        state.extend(output);
+    fn add_output(state: &mut MessagesState, output: Option<mapping::Message>) {
+        state.messages.extend(output);
     }
 
     fn delta_stream() -> (StreamWriter<ModelDelta>, StreamReader<ModelDelta>) {

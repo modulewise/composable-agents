@@ -35,9 +35,15 @@ struct ChatCompletionsConfig {
     max_tokens_field: mapping::MaxTokensField,
 }
 
+/// The conversation and the session's settings, in Chat Completions form.
+struct ChatState {
+    messages: Vec<mapping::Message>,
+    api_settings: mapping::ApiSettings,
+}
+
 impl Client for ChatCompletionsClient {
     type Config = ChatCompletionsConfig;
-    type State = Vec<mapping::Message>;
+    type State = ChatState;
     // The assistant message.
     type Output = mapping::Message;
 
@@ -62,33 +68,34 @@ impl Client for ChatCompletionsClient {
         headers
     }
 
-    fn start(
-        settings: &ModelSettings,
-        history: &[ModelExchange],
-    ) -> Result<Vec<mapping::Message>, ModelError> {
+    fn start(settings: &ModelSettings, history: &[ModelExchange]) -> Result<ChatState, ModelError> {
         require_answered_tool_calls(history)?;
-        Ok(mapping::history_to_messages(
-            settings.instructions.as_deref(),
-            history,
-        ))
+        Ok(ChatState {
+            messages: mapping::history_to_messages(settings.instructions.as_deref(), history),
+            api_settings: mapping::ApiSettings::new(settings)?,
+        })
     }
 
-    fn add_input(
-        state: &mut Vec<mapping::Message>,
-        input: &[ModelInputItem],
-    ) -> Result<(), ModelError> {
-        state.extend(mapping::input_items_to_messages(input)?);
+    fn add_input(state: &mut ChatState, input: &[ModelInputItem]) -> Result<(), ModelError> {
+        state
+            .messages
+            .extend(mapping::input_items_to_messages(input)?);
         Ok(())
     }
 
     fn request(
         model: &str,
-        state: &Vec<mapping::Message>,
-        settings: &ModelSettings,
+        state: &ChatState,
         config: &ChatCompletionsConfig,
         max_tokens: Option<u32>,
     ) -> Result<Vec<u8>, ModelError> {
-        mapping::build_request(model, state, settings, config.max_tokens_field, max_tokens)
+        mapping::build_request(
+            model,
+            &state.messages,
+            &state.api_settings,
+            config.max_tokens_field,
+            max_tokens,
+        )
     }
 
     async fn read_response(
@@ -98,8 +105,8 @@ impl Client for ChatCompletionsClient {
         mapping::stream_response(body, deltas).await
     }
 
-    fn add_output(state: &mut Vec<mapping::Message>, output: mapping::Message) {
-        state.push(output);
+    fn add_output(state: &mut ChatState, output: mapping::Message) {
+        state.messages.push(output);
     }
 
     fn delta_stream() -> (StreamWriter<ModelDelta>, StreamReader<ModelDelta>) {

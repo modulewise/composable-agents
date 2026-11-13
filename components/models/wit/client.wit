@@ -14,7 +14,10 @@ interface client {
         constructor(settings: model-settings, history: list<model-exchange>) -> result<session, model-error>;
 
         /// Make one model call and stream the model's response as a series of
-        /// `model-delta` items followed by a final `model-response`.
+        /// `model-delta` items followed by a final `model-response`. Fails,
+        /// with nothing sent or recorded, on input the client cannot send. A
+        /// failure sending the request or reading the response resolves
+        /// `result`.
         call: async func(request: model-request) -> result<model-response-stream, model-error>;
 
         /// The exchanges this session's calls made, oldest first.

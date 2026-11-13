@@ -270,13 +270,13 @@ struct ChatRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     seed: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    stop: Option<Vec<String>>,
+    stop: Option<&'a [String]>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tools: Option<Vec<Tool>>,
+    tools: Option<&'a [Tool]>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    tool_choice: Option<serde_json::Value>,
+    tool_choice: Option<&'a serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    response_format: Option<ResponseFormat>,
+    response_format: Option<&'a ResponseFormat>,
 }
 
 // Structured output: `{"type":"json_schema","json_schema":{...}}`.
@@ -334,7 +334,7 @@ struct ToolFunction {
 }
 
 // An OpenAI tool definition, with its input schema parsed into JSON. An
-// invalid schema fails the request.
+// invalid schema fails the session.
 fn to_openai_tool(def: &ToolDefinition) -> Result<Tool, ModelError> {
     let parameters = serde_json::from_str(&def.input_schema).map_err(|e| ModelError {
         message: format!("tool '{}' has an invalid input-schema: {e}", def.name),
@@ -391,29 +391,51 @@ impl std::str::FromStr for MaxTokensField {
 /// A valid `max-tokens-field` value, for the error on an invalid one.
 pub(crate) const MAX_TOKENS_FIELD_VALUES: &str = "max_tokens or max_completion_tokens";
 
+/// A session's settings in Chat Completions form.
+pub(crate) struct ApiSettings {
+    temperature: Option<f64>,
+    top_p: Option<f64>,
+    seed: Option<u64>,
+    stop: Option<Vec<String>>,
+    tools: Option<Vec<Tool>>,
+    tool_choice: Option<serde_json::Value>,
+    response_format: Option<ResponseFormat>,
+}
+
+impl ApiSettings {
+    /// Fails on an invalid input-schema or output-schema.
+    pub(crate) fn new(settings: &ModelSettings) -> Result<Self, ModelError> {
+        Ok(ApiSettings {
+            temperature: settings.temperature,
+            top_p: settings.top_p,
+            seed: settings.seed,
+            stop: settings.stop_sequences.clone(),
+            tools: settings
+                .tools
+                .as_ref()
+                .map(|defs| {
+                    defs.iter()
+                        .map(to_openai_tool)
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .transpose()?,
+            tool_choice: settings.tool_choice.as_ref().map(to_openai_tool_choice),
+            response_format: settings
+                .output_schema
+                .as_deref()
+                .map(response_format)
+                .transpose()?,
+        })
+    }
+}
+
 pub(crate) fn build_request(
     model: &str,
     history: &[Message],
-    settings: &ModelSettings,
+    api_settings: &ApiSettings,
     max_tokens_field: MaxTokensField,
     max_tokens: Option<u32>,
 ) -> Result<Vec<u8>, ModelError> {
-    let tools = settings
-        .tools
-        .as_ref()
-        .map(|defs| {
-            defs.iter()
-                .map(to_openai_tool)
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .transpose()?;
-    let tool_choice = settings.tool_choice.as_ref().map(to_openai_tool_choice);
-    let response_format = settings
-        .output_schema
-        .as_deref()
-        .map(response_format)
-        .transpose()?;
-
     let req = ChatRequest {
         model,
         messages: history,
@@ -421,16 +443,16 @@ pub(crate) fn build_request(
         stream_options: StreamOptions {
             include_usage: true,
         },
-        temperature: settings.temperature,
-        top_p: settings.top_p,
+        temperature: api_settings.temperature,
+        top_p: api_settings.top_p,
         max_tokens: max_tokens.filter(|_| max_tokens_field == MaxTokensField::MaxTokens),
         max_completion_tokens: max_tokens
             .filter(|_| max_tokens_field == MaxTokensField::MaxCompletionTokens),
-        seed: settings.seed,
-        stop: settings.stop_sequences.clone(),
-        tools,
-        tool_choice,
-        response_format,
+        seed: api_settings.seed,
+        stop: api_settings.stop.as_deref(),
+        tools: api_settings.tools.as_deref(),
+        tool_choice: api_settings.tool_choice.as_ref(),
+        response_format: api_settings.response_format.as_ref(),
     };
     serde_json::to_vec(&req).map_err(|e| ModelError {
         message: format!("failed to serialize request: {e}"),
@@ -881,7 +903,14 @@ mod tests {
             ..settings_with_tools(&[])
         };
         let body: serde_json::Value = serde_json::from_slice(
-            &build_request("gpt-test", &[], &settings, MaxTokensField::MaxTokens, None).unwrap(),
+            &build_request(
+                "gpt-test",
+                &[],
+                &ApiSettings::new(&settings).unwrap(),
+                MaxTokensField::MaxTokens,
+                None,
+            )
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(
@@ -905,7 +934,7 @@ mod tests {
             &build_request(
                 "gpt-test",
                 &[],
-                &settings_with_tools(&[]),
+                &ApiSettings::new(&settings_with_tools(&[])).unwrap(),
                 MaxTokensField::MaxTokens,
                 None,
             )
@@ -918,15 +947,21 @@ mod tests {
             output_schema: Some("{not json".into()),
             ..settings_with_tools(&[])
         };
-        assert!(build_request("gpt-test", &[], &invalid, MaxTokensField::MaxTokens, None).is_err());
+        assert!(ApiSettings::new(&invalid).is_err());
     }
 
     #[test]
     fn the_token_limit_is_sent_in_the_configured_field() {
         let body = |field| -> serde_json::Value {
             serde_json::from_slice(
-                &build_request("gpt-test", &[], &settings_with_tools(&[]), field, Some(100))
-                    .unwrap(),
+                &build_request(
+                    "gpt-test",
+                    &[],
+                    &ApiSettings::new(&settings_with_tools(&[])).unwrap(),
+                    field,
+                    Some(100),
+                )
+                .unwrap(),
             )
             .unwrap()
         };

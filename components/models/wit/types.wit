@@ -217,6 +217,14 @@ interface types {
         opaque-content: option<opaque-content>,
     }
 
+    /// Where a call is sent.
+    record server {
+        /// The host: a domain name or an IP address.
+        address: string,
+        /// The port, or the scheme's default when the URL does not have one.
+        port: u16,
+    }
+
     /// The response for a `call`. The deltas stream as the model generates,
     /// and the future resolves to the `model-response` when the stream ends.
     record model-response-stream {
@@ -224,6 +232,11 @@ interface types {
         request-model: string,
         /// The provider serving the call, e.g. "openai" or "ollama".
         provider: string,
+        /// Where the client sends the call. None when the model runs in the
+        /// same process.
+        server: option<server>,
+        /// The output limit sent with the call, else the provider's default.
+        max-tokens: option<u32>,
         deltas: stream<model-delta>,
         %result: future<result<model-response, model-error>>,
     }
