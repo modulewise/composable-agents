@@ -6,8 +6,8 @@ use std::convert::Infallible;
 use model_client_support::sse::Events;
 use model_client_support::types::{
     ContentDelta, ContentSource, ModelDelta, ModelError, ModelExchange, ModelFinishReason,
-    ModelInputItem, ModelOutputItem, ModelResponse, ModelSettings, ResultContent, TokenUsage,
-    ToolCall, ToolCallDelta, ToolChoice, ToolDefinition,
+    ModelInputItem, ModelOutputItem, ModelResponse, ModelSettings, RequestParameters,
+    ResultContent, TokenUsage, ToolCall, ToolCallDelta, ToolChoice, ToolDefinition,
 };
 use model_client_support::{
     Deltas, history_input_note, json_error_position, output_media_note, tool_result_media_note,
@@ -270,6 +270,8 @@ struct ChatRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     seed: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     stop: Option<&'a [String]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<&'a [Tool]>,
@@ -301,11 +303,8 @@ const OUTPUT_SCHEMA_NAME: &str = "output";
 // strict mode guarantees the output matches the schema, and a schema outside
 // strict mode's subset fails the call with the provider's error.
 fn response_format(output_schema: &str) -> Result<ResponseFormat, ModelError> {
-    let schema = serde_json::from_str(output_schema).map_err(|e| ModelError {
-        message: format!("the output-schema is invalid JSON: {e}"),
-        status: None,
-        usage: TokenUsage::default(),
-    })?;
+    let schema = serde_json::from_str(output_schema)
+        .map_err(|e| ModelError::new(format!("the output-schema is invalid JSON: {e}")))?;
     Ok(ResponseFormat {
         kind: "json_schema",
         json_schema: JsonSchemaFormat {
@@ -336,10 +335,11 @@ struct ToolFunction {
 // An OpenAI tool definition, with its input schema parsed into JSON. An
 // invalid schema fails the session.
 fn to_openai_tool(def: &ToolDefinition) -> Result<Tool, ModelError> {
-    let parameters = serde_json::from_str(&def.input_schema).map_err(|e| ModelError {
-        message: format!("tool '{}' has an invalid input-schema: {e}", def.name),
-        status: None,
-        usage: TokenUsage::default(),
+    let parameters = serde_json::from_str(&def.input_schema).map_err(|e| {
+        ModelError::new(format!(
+            "tool '{}' has an invalid input-schema: {e}",
+            def.name
+        ))
     })?;
     Ok(Tool {
         kind: "function",
@@ -427,12 +427,31 @@ impl ApiSettings {
                 .transpose()?,
         })
     }
+
+    /// The parameters a request sends, with `effort` and `max_tokens`.
+    pub(crate) fn parameters(
+        &self,
+        effort: Option<&str>,
+        max_tokens: Option<u32>,
+    ) -> RequestParameters {
+        RequestParameters {
+            max_tokens,
+            temperature: self.temperature,
+            top_p: self.top_p,
+            top_k: None,
+            seed: self.seed,
+            stop_sequences: self.stop.clone(),
+            reasoning_level: effort.map(str::to_string),
+            output_type: self.response_format.as_ref().map(|_| "json".to_string()),
+        }
+    }
 }
 
 pub(crate) fn build_request(
     model: &str,
     history: &[Message],
     api_settings: &ApiSettings,
+    effort: Option<&str>,
     max_tokens_field: MaxTokensField,
     max_tokens: Option<u32>,
 ) -> Result<Vec<u8>, ModelError> {
@@ -449,16 +468,14 @@ pub(crate) fn build_request(
         max_completion_tokens: max_tokens
             .filter(|_| max_tokens_field == MaxTokensField::MaxCompletionTokens),
         seed: api_settings.seed,
+        reasoning_effort: effort,
         stop: api_settings.stop.as_deref(),
         tools: api_settings.tools.as_deref(),
         tool_choice: api_settings.tool_choice.as_ref(),
         response_format: api_settings.response_format.as_ref(),
     };
-    serde_json::to_vec(&req).map_err(|e| ModelError {
-        message: format!("failed to serialize request: {e}"),
-        status: None,
-        usage: TokenUsage::default(),
-    })
+    serde_json::to_vec(&req)
+        .map_err(|e| ModelError::new(format!("failed to serialize request: {e}")))
 }
 
 // === Incoming SSE stream ====================================================
@@ -591,18 +608,15 @@ pub(crate) async fn stream_response(
 // the connection drops, is no response.
 fn complete(acc: Accumulator) -> Result<(ModelResponse, Message), ModelError> {
     if acc.finish_reason.is_none() {
-        return Err(ModelError {
-            message: "the response ended before the provider finished it".to_string(),
-            status: None,
-            usage: TokenUsage::default(),
-        });
+        return Err(ModelError::new(
+            "the response ended before the provider finished it",
+        ));
     }
     if !acc.refusal.is_empty() {
-        return Err(ModelError {
-            message: format!("the model refused: {}", acc.refusal),
-            status: None,
-            usage: TokenUsage::default(),
-        });
+        return Err(ModelError::new(format!(
+            "the model refused: {}",
+            acc.refusal
+        )));
     }
     Ok(assemble(acc))
 }
@@ -616,30 +630,28 @@ fn chunk_of(data: &str) -> Result<Chunk, ModelError> {
         } else {
             "a chunk that is not valid JSON"
         };
-        ModelError {
-            message: format!("the provider sent {what} ({})", json_error_position(&e)),
-            status: None,
-            usage: TokenUsage::default(),
-        }
+        ModelError::new(format!(
+            "the provider sent {what} ({})",
+            json_error_position(&e)
+        ))
     })?;
     match &chunk.error {
-        Some(error) => Err(ModelError {
-            message: error_message(error),
-            status: None,
-            usage: TokenUsage::default(),
-        }),
+        Some(error) => Err(chunk_error(error)),
         None => Ok(chunk),
     }
 }
 
-// The message for an error chunk: its message, else its type. Nothing else is
-// shown.
-fn error_message(error: &serde_json::Value) -> String {
+// The error for an error chunk as its `code`, else its `type`, and its
+// message. Nothing else is shown.
+fn chunk_error(error: &serde_json::Value) -> ModelError {
     let text = |key| error.get(key).and_then(serde_json::Value::as_str);
-    match (text("message"), text("type")) {
-        (Some(message), _) => format!("the provider failed the response: {message}"),
-        (None, Some(kind)) => format!("the provider failed the response ({kind})"),
-        (None, None) => "the provider failed the response".to_string(),
+    let message = match text("message") {
+        Some(message) => format!("the provider failed the response: {message}"),
+        None => "the provider failed the response".to_string(),
+    };
+    ModelError {
+        code: text("code").or(text("type")).map(str::to_string),
+        ..ModelError::new(message)
     }
 }
 
@@ -907,6 +919,7 @@ mod tests {
                 "gpt-test",
                 &[],
                 &ApiSettings::new(&settings).unwrap(),
+                None,
                 MaxTokensField::MaxTokens,
                 None,
             )
@@ -935,6 +948,7 @@ mod tests {
                 "gpt-test",
                 &[],
                 &ApiSettings::new(&settings_with_tools(&[])).unwrap(),
+                None,
                 MaxTokensField::MaxTokens,
                 None,
             )
@@ -958,6 +972,7 @@ mod tests {
                     "gpt-test",
                     &[],
                     &ApiSettings::new(&settings_with_tools(&[])).unwrap(),
+                    None,
                     field,
                     Some(100),
                 )
@@ -974,6 +989,35 @@ mod tests {
     }
 
     #[test]
+    fn the_effort_is_sent_as_configured_and_reported_as_the_reasoning_level() {
+        let api_settings = ApiSettings::new(&settings_with_tools(&[])).unwrap();
+        let body = |effort| -> serde_json::Value {
+            serde_json::from_slice(
+                &build_request(
+                    "gpt-test",
+                    &[],
+                    &api_settings,
+                    effort,
+                    MaxTokensField::default(),
+                    None,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+        };
+        // Any value is sent as configured.
+        assert_eq!(body(Some("ultra"))["reasoning_effort"], "ultra");
+        assert!(body(None).get("reasoning_effort").is_none());
+        assert_eq!(
+            api_settings
+                .parameters(Some("ultra"), None)
+                .reasoning_level
+                .as_deref(),
+            Some("ultra")
+        );
+    }
+
+    #[test]
     fn a_specific_tool_choice_names_the_function() {
         assert_eq!(
             to_openai_tool_choice(&ToolChoice::Specific("calc_add".into())),
@@ -987,18 +1031,19 @@ mod tests {
             chunk_of(r#"{"error": {"message": "model overloaded", "type": "server_error"}}"#)
                 .err()
                 .unwrap();
+        assert_eq!(error.code.as_deref(), Some("server_error"));
         assert_eq!(
             error.message,
             "the provider failed the response: model overloaded"
         );
-        // Without a message, only the error's type is shown.
-        let error = chunk_of(r#"{"error": {"type": "server_error", "secret": "s3cr3t"}}"#)
-            .err()
-            .unwrap();
-        assert_eq!(
-            error.message,
-            "the provider failed the response (server_error)"
-        );
+        // A code takes precedence over the type, and nothing else is shown.
+        let error = chunk_of(
+            r#"{"error": {"type": "server_error", "code": "server_is_overloaded", "secret": "s3cr3t"}}"#,
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error.code.as_deref(), Some("server_is_overloaded"));
+        assert_eq!(error.message, "the provider failed the response");
 
         // Data that doesn't parse, or isn't a chunk, is never shown.
         assert_eq!(

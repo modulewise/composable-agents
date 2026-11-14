@@ -17,27 +17,29 @@ A `session` serves one agent invocation:
 
 - **`constructor(settings, history)`** takes the caller's `model-settings` and
   the conversation's earlier exchanges, and fails on history or settings it
-  cannot send, or an invalid `base-url`.
-- **`call(request)`** makes one model call and returns the response as it
-  arrives, with the provider, the requested model, the server it's sent to, the
-  `max-tokens` sent, a stream of deltas (content fragments and token counts)
-  and a future of the final `model-response`. A request's `max-tokens` limits
-  the call, taking precedence over the session's, then the config's, then the
-  client's default. `call` fails only on input it cannot send, with nothing
-  sent or recorded. A failure sending the request or reading the response
-  resolves the future.
+  cannot send, or a `base-url` that is not a valid URL or has no host or port.
+- **`call(request)`** makes one model call and returns a `model-call` with the
+  requested model, the provider, the API, the server it's sent to, the
+  parameters sent, and the response as it arrives. The response is a stream of
+  deltas (content fragments and token counts) and a future of the final
+  `model-response`. A request's `max-tokens` limits the call, taking precedence
+  over the session's, then the config's, then the client's default. The
+  response is an error only on input the client cannot send, with nothing sent
+  or recorded. A failure sending the request or reading the response resolves
+  the future.
 - **`exchanges()`** returns the calls made within the session (each request
   with its output, provider, models, and token counts), for the caller to add
-  to the conversation's history.
+  to the conversation's history. A call's exchange is complete once the call's
+  future resolves.
 
 A response that never finishes (a stream that ends without a finish reason,
 or carries a provider error) fails the call with the provider's message.
 
 Token counts are recorded in each call's exchange as the provider reports
 them, so a call that fails or is canceled keeps the counts reported before it
-ended. A `usage` delta carries the counts so far, and the final
-`model-response` or `model-error` carries the call's counts. Any count that is
-`none` means it was not reported.
+ended. A `usage` delta includes the counts so far, and the final
+`model-response` includes the call's counts. Any count that is `none` means it
+was not reported.
 
 History follows four rules:
 
@@ -71,6 +73,7 @@ audio, video, and documents. It maps `output-schema` to a strict JSON Schema
 | `api-key` | optional: sent as a bearer token when set (most hosted providers require one) |
 | `max-tokens` | optional default, overridden by `model-settings` and the request |
 | `max-tokens-field` | default: `max_completion_tokens`; `max_tokens` for providers that still use it (such as Ollama) |
+| `effort` | optional: sent as `reasoning_effort` unchanged, since the values depend on the provider and model |
 
 ## anthropic-messages-client
 

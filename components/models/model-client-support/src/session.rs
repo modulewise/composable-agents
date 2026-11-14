@@ -10,8 +10,8 @@ use wit_bindgen::rt::async_support::{
 };
 
 use crate::composable::models::types::{
-    ModelDelta, ModelError, ModelExchange, ModelInputItem, ModelRequest, ModelResponse,
-    ModelResponseStream, ModelSettings, TokenUsage,
+    ModelCall, ModelDelta, ModelError, ModelExchange, ModelInputItem, ModelRequest, ModelResponse,
+    ModelResponseStream, ModelSettings, RequestParameters, TokenUsage,
 };
 use crate::config::CommonConfig;
 use crate::http::send_request;
@@ -32,6 +32,8 @@ pub trait Client: 'static {
     /// What a response adds to the state, such as the model's turn.
     type Output: 'static;
 
+    /// The API the client uses, e.g. "chat-completions".
+    const API: &'static str;
     /// The base URL when none is configured.
     const DEFAULT_BASE_URL: &'static str;
     /// The endpoint's path under the base URL.
@@ -76,6 +78,13 @@ pub trait Client: 'static {
         max_tokens: Option<u32>,
     ) -> Result<Vec<u8>, ModelError>;
 
+    /// The parameters a request sends, with `max_tokens` as its limit, if any.
+    fn parameters(
+        state: &Self::State,
+        config: &Self::Config,
+        max_tokens: Option<u32>,
+    ) -> RequestParameters;
+
     /// Reads the response body, writing deltas as they arrive, and returns the
     /// assembled response and its state update. Token counts the provider
     /// reports are written as usage deltas. If the caller stops reading the
@@ -119,11 +128,7 @@ impl Deltas {
             .await
         {
             None => Ok(()),
-            Some(_) => Err(ModelError {
-                message: "the caller stopped reading the response".to_string(),
-                status: None,
-                usage: TokenUsage::default(),
-            }),
+            Some(_) => Err(ModelError::new("the caller stopped reading the response")),
         }
     }
 }
@@ -147,7 +152,7 @@ impl<C: Client> Session<C> {
     /// Fails on missing or invalid config, invalid tool names, or history the
     /// client cannot use.
     pub fn new(settings: ModelSettings, history: Vec<ModelExchange>) -> Result<Self, ModelError> {
-        let common = CommonConfig::load(C::DEFAULT_BASE_URL)?;
+        let common = CommonConfig::load(C::DEFAULT_BASE_URL, C::PATH)?;
         let config = C::config()?;
         let names = ToolNames::new(&settings)?;
         let settings = sent_settings(&settings);
@@ -162,11 +167,7 @@ impl<C: Client> Session<C> {
         })
     }
 
-    pub async fn call(&self, request: ModelRequest) -> Result<ModelResponseStream, ModelError> {
-        // Check the server, add the input to the state, and build the body. A
-        // failure here fails the call before it's recorded or sent.
-        let server = self.common.server()?;
-        C::add_input(&mut self.state.borrow_mut(), &sent_input(&request.input))?;
+    pub async fn call(&self, request: ModelRequest) -> ModelCall {
         // The call's limit, else the session's, else the configured one, else
         // the client's default.
         let max_tokens = request
@@ -174,6 +175,26 @@ impl<C: Client> Session<C> {
             .or(self.settings.max_tokens)
             .or(self.common.max_tokens)
             .or(C::DEFAULT_MAX_TOKENS);
+        let parameters = C::parameters(&self.state.borrow(), &self.config, max_tokens);
+        ModelCall {
+            request_model: self.common.model.clone(),
+            provider: self.common.provider.clone(),
+            api: C::API.to_string(),
+            server: Some(self.common.server.clone()),
+            parameters,
+            response: self.respond(request, max_tokens),
+        }
+    }
+
+    // Adds the input to the state, builds the body, records the exchange, and
+    // sends the request. A failure adding the input or building the body fails
+    // the call before it's recorded or sent.
+    fn respond(
+        &self,
+        request: ModelRequest,
+        max_tokens: Option<u32>,
+    ) -> Result<ModelResponseStream, ModelError> {
+        C::add_input(&mut self.state.borrow_mut(), &sent_input(&request.input))?;
         let body = C::request(
             &self.common.model,
             &self.state.borrow(),
@@ -198,18 +219,13 @@ impl<C: Client> Session<C> {
         // the deltas, assembles the response, updates the state, and resolves
         // the outcome. A response's output (with the original tool names),
         // opaque content, model, and counts are recorded in the exchange. A
-        // failure sending or reading gets the counts recorded before it.
-        let endpoint = self.common.endpoint(C::PATH);
+        // failed call's exchange keeps the counts recorded before it failed.
+        let endpoint = self.common.endpoint.clone();
         let headers = C::headers(self.common.api_key.as_deref());
         let max_retries = C::max_retries(&self.config);
         let (delta_tx, delta_rx) = C::delta_stream();
-        let (outcome_tx, outcome_rx) = C::outcome_future(|| {
-            Err(ModelError {
-                message: "session dropped before completion".into(),
-                status: None,
-                usage: TokenUsage::default(),
-            })
-        });
+        let (outcome_tx, outcome_rx) =
+            C::outcome_future(|| Err(ModelError::new("session dropped before completion")));
 
         let state = self.state.clone();
         let names = self.names.clone();
@@ -225,30 +241,20 @@ impl<C: Client> Session<C> {
                 Err(error) => Err(error),
             };
             drop(deltas);
-            let outcome = match outcome {
-                Ok((mut response, output)) => {
-                    C::add_output(&mut state.borrow_mut(), output);
-                    response.output = names.original_output(response.output);
-                    let mut recorded = exchange.borrow_mut();
-                    recorded.output = Some(response.output.clone());
-                    recorded.opaque_content = response.opaque_content.clone();
-                    recorded.response_model = response.model.clone();
-                    recorded.usage = response.usage;
-                    Ok(response)
-                }
-                Err(mut error) => {
-                    error.usage = exchange.borrow().usage;
-                    Err(error)
-                }
-            };
+            let outcome = outcome.map(|(mut response, output)| {
+                C::add_output(&mut state.borrow_mut(), output);
+                response.output = names.original_output(response.output);
+                let mut recorded = exchange.borrow_mut();
+                recorded.output = Some(response.output.clone());
+                recorded.opaque_content = response.opaque_content.clone();
+                recorded.response_model = response.model.clone();
+                recorded.usage = response.usage;
+                response
+            });
             let _ = outcome_tx.write(outcome).await;
         });
 
         Ok(ModelResponseStream {
-            request_model: self.common.model.clone(),
-            provider: self.common.provider.clone(),
-            server: Some(server),
-            max_tokens,
             deltas: delta_rx,
             result: outcome_rx,
         })

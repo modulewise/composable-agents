@@ -2,7 +2,7 @@
 //! can't send fails a new call, and becomes a note in history.
 
 use crate::composable::models::types::{
-    ContentSource, ModelError, ModelExchange, ModelInputItem, ModelOutputItem, TokenUsage,
+    ContentSource, ModelError, ModelExchange, ModelInputItem, ModelOutputItem,
 };
 
 /// Fails on a tool call in `history` without a tool result in the next
@@ -18,14 +18,10 @@ pub fn require_answered_tool_calls(history: &[ModelExchange]) -> Result<(), Mode
                     matches!(input, ModelInputItem::ToolResult(result) if result.tool_call_id == call.id)
                 })
             {
-                return Err(ModelError {
-                    message: format!(
-                        "tool call '{}' to '{}' has no result in the next exchange",
-                        call.id, call.name
-                    ),
-                    status: None,
-                    usage: TokenUsage::default(),
-                });
+                return Err(ModelError::new(format!(
+                    "tool call '{}' to '{}' has no result in the next exchange",
+                    call.id, call.name
+                )));
             }
         }
     }
@@ -34,14 +30,10 @@ pub fn require_answered_tool_calls(history: &[ModelExchange]) -> Result<(), Mode
 
 /// The error for a new call's input of `kind` that the client cannot send.
 pub fn unsendable_input_error(kind: &str, source: &ContentSource) -> ModelError {
-    ModelError {
-        message: format!(
-            "this client cannot send {kind} input ({})",
-            media_detail(source)
-        ),
-        status: None,
-        usage: TokenUsage::default(),
-    }
+    ModelError::new(format!(
+        "this client cannot send {kind} input ({})",
+        media_detail(source)
+    ))
 }
 
 /// A note in place of history input of `kind` that the client cannot send.
@@ -87,7 +79,9 @@ pub fn media_detail(source: &ContentSource) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::composable::models::types::{MediaData, ModelRequest, ToolCall, ToolResult};
+    use crate::composable::models::types::{
+        MediaData, ModelRequest, TokenUsage, ToolCall, ToolResult,
+    };
 
     fn exchange(input: Vec<ModelInputItem>, output: Option<Vec<ModelOutputItem>>) -> ModelExchange {
         ModelExchange {
