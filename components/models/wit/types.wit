@@ -225,28 +225,52 @@ interface types {
         port: u16,
     }
 
-    /// The response for a `call`. The deltas stream as the model generates,
-    /// and the future resolves to the `model-response` when the stream ends.
-    record model-response-stream {
-        /// The model the call requested. The response model may differ.
+    /// The parameters a client sends with a call. A parameter that is not
+    /// sent is `none`.
+    record request-parameters {
+        /// The output limit in token count.
+        max-tokens: option<u32>,
+        temperature: option<f64>,
+        top-p: option<f64>,
+        top-k: option<u32>,
+        seed: option<u64>,
+        stop-sequences: option<list<string>>,
+        /// The reasoning effort, e.g. "low" or "high".
+        reasoning-level: option<string>,
+        /// The type of output requested, e.g. "json".
+        output-type: option<string>,
+    }
+
+    /// A call's model, provider, API, server and parameters, and its
+    /// response.
+    record model-call {
+        /// The model the call requests. The response model may differ.
         request-model: string,
         /// The provider serving the call, e.g. "openai" or "ollama".
         provider: string,
+        /// The API the client uses, e.g. "chat-completions".
+        api: string,
         /// Where the client sends the call. None when the model runs in the
         /// same process.
         server: option<server>,
-        /// The output limit sent with the call, else the provider's default.
-        max-tokens: option<u32>,
+        parameters: request-parameters,
+        /// The streamed response, or the error when nothing was sent.
+        response: result<model-response-stream, model-error>,
+    }
+
+    /// The deltas stream as the model generates, and the future resolves to
+    /// the `model-response` when the stream ends.
+    record model-response-stream {
         deltas: stream<model-delta>,
         %result: future<result<model-response, model-error>>,
     }
 
     record model-error {
         message: string,
+        /// The provider's error code, e.g. "overloaded_error".
+        code: option<string>,
         /// Provider/transport status code when applicable.
         status: option<u32>,
-        /// The token counts the provider reported before the call failed.
-        usage: token-usage,
     }
 
     /// A model call: its request and, if the call succeeded, the model's

@@ -7,7 +7,7 @@ use serde_json::Value;
 use wit_bindgen::rt::async_support::{StreamReader, StreamResult, spawn_local};
 
 use crate::componentized::http::client::{self, ErrorCode, HttpResponse, RequestOptions};
-use crate::composable::models::types::{ModelError, TokenUsage};
+use crate::composable::models::types::ModelError;
 use crate::wit_stream;
 
 // Backoff: 0.5s, doubled on each retry, at most 8s.
@@ -15,7 +15,8 @@ const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(8);
 
 /// POSTs the body and returns the streaming response. An error status
-/// returns a `ModelError` with the status and the provider's error message.
+/// returns a `ModelError` with the status and the provider's error code and
+/// message.
 ///
 /// A request that fails before its response starts is retried up to
 /// `max_retries` times (see `should_retry`), waiting with `sleep` between
@@ -55,7 +56,7 @@ where
             // The request failed before a response arrived.
             Err(ErrorCode::Other(_)) if retries < max_retries => backoff(retries),
             Err(ErrorCode::Other(reason)) => {
-                return Err(failure(reason.unwrap_or_else(|| {
+                return Err(ModelError::new(reason.unwrap_or_else(|| {
                     "HTTP request failed (no reason given)".to_string()
                 })));
             }
@@ -78,9 +79,10 @@ const NO_REDIRECTS: RequestOptions = RequestOptions {
 
 fn redirected(status: u16) -> ModelError {
     ModelError {
-        message: format!("the provider redirected the request (status {status})"),
         status: Some(status as u32),
-        usage: TokenUsage::default(),
+        ..ModelError::new(format!(
+            "the provider redirected the request (status {status})"
+        ))
     }
 }
 
@@ -93,8 +95,8 @@ fn body_stream(body: Vec<u8>) -> StreamReader<u8> {
     body_rx
 }
 
-// The error for an error response: its status, and the provider's error
-// message if the body includes one. Drains the body.
+// The error for an error response with its status, and the provider's error
+// code and message if the body includes them. Drains the body.
 async fn error_of(response: HttpResponse) -> ModelError {
     let status = response.status;
     let mut err_body = Vec::new();
@@ -106,40 +108,32 @@ async fn error_of(response: HttpResponse) -> ModelError {
             break;
         }
     }
-    let message = match provider_error(&err_body) {
-        Some((Some(kind), message)) => format!("provider returned {status} ({kind}): {message}"),
-        Some((None, message)) => format!("provider returned {status}: {message}"),
-        None => format!("provider returned {status}"),
+    let (code, message) = match provider_error(&err_body) {
+        Some((code, message)) => (code, format!("provider returned {status}: {message}")),
+        None => (None, format!("provider returned {status}")),
     };
     ModelError {
-        message,
+        code,
         status: Some(status as u32),
-        usage: TokenUsage::default(),
+        ..ModelError::new(message)
     }
 }
 
-// The provider's error type and message from an error body: `error.type` and
-// `error.message`, or `error` as a string. Nothing else is read.
+// The provider's error code and message from an error body. The code is
+// `error.code`, else `error.type`, and the message is `error.message`, or
+// `error` as a string. Nothing else is read.
 fn provider_error(body: &[u8]) -> Option<(Option<String>, String)> {
     let body: Value = serde_json::from_slice(body).ok()?;
     match body.get("error")? {
         Value::String(message) => Some((None, message.clone())),
         error => {
             let message = error.get("message")?.as_str()?.to_string();
-            let kind = error
-                .get("type")
-                .and_then(Value::as_str)
+            let code = ["code", "type"]
+                .iter()
+                .find_map(|key| error.get(key).and_then(Value::as_str))
                 .map(str::to_string);
-            Some((kind, message))
+            Some((code, message))
         }
-    }
-}
-
-fn failure(message: String) -> ModelError {
-    ModelError {
-        message,
-        status: None,
-        usage: TokenUsage::default(),
     }
 }
 
@@ -197,6 +191,15 @@ mod tests {
             Some((
                 Some("invalid_request_error".to_string()),
                 "temperature: Extra inputs are not permitted".to_string()
+            ))
+        );
+        assert_eq!(
+            provider_error(
+                br#"{"error":{"message":"quota exceeded","type":"insufficient_quota","param":null,"code":"credit_balance_exhausted"}}"#
+            ),
+            Some((
+                Some("credit_balance_exhausted".to_string()),
+                "quota exceeded".to_string()
             ))
         );
         assert_eq!(

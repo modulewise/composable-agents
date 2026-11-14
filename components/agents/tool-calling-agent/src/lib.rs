@@ -179,6 +179,7 @@ async fn run(
                 max_tokens: None,
             })
             .await
+            .response
         {
             Ok(stream) => stream,
             Err(e) => {
@@ -216,11 +217,15 @@ async fn run(
             };
             if !send_all(&mut events, ready).await {
                 drop(deltas);
+                // The call's exchange is complete once its result resolves.
+                let _ = stream.result.await;
                 return task.end(TaskState::Canceled, None, None);
             }
         }
         // A run of reasoning also ends with the stream.
         if !send_all(&mut events, reasoning.finish(ids).into_iter().collect()).await {
+            // The call's exchange is complete once its result resolves.
+            let _ = stream.result.await;
             return task.end(TaskState::Canceled, None, None);
         }
 

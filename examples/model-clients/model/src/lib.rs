@@ -32,7 +32,11 @@ impl Guest for Model {
             input: vec![ModelInputItem::Text(prompt)],
             max_tokens: None,
         };
-        let stream = session.call(request).await.map_err(|e| e.message)?;
+        let stream = session
+            .call(request)
+            .await
+            .response
+            .map_err(|e| e.message)?;
 
         // Read the deltas to the end so the call can finish. Dropping them
         // cancels the call.

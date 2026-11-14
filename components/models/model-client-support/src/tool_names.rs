@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use crate::composable::models::types::{
     ContentDelta, ModelDelta, ModelError, ModelExchange, ModelInputItem, ModelOutputItem,
-    ModelSettings, TokenUsage, ToolChoice,
+    ModelSettings, ToolChoice,
 };
 
 /// The maximum length of a tool name.
@@ -34,25 +34,17 @@ impl ToolNames {
         for definition in settings.tools.iter().flatten() {
             let length = definition.name.chars().count();
             if length == 0 || length > MAX_LEN {
-                return Err(ModelError {
-                    message: format!(
-                        "tool name '{}' must be 1 to {MAX_LEN} characters",
-                        definition.name
-                    ),
-                    status: None,
-                    usage: TokenUsage::default(),
-                });
+                return Err(ModelError::new(format!(
+                    "tool name '{}' must be 1 to {MAX_LEN} characters",
+                    definition.name
+                )));
             }
             let name = sent(&definition.name);
             if let Some(other) = originals.insert(name.clone(), definition.name.clone()) {
-                return Err(ModelError {
-                    message: format!(
-                        "tools '{other}' and '{}' would both be sent as '{name}'",
-                        definition.name
-                    ),
-                    status: None,
-                    usage: TokenUsage::default(),
-                });
+                return Err(ModelError::new(format!(
+                    "tools '{other}' and '{}' would both be sent as '{name}'",
+                    definition.name
+                )));
             }
         }
         Ok(ToolNames { originals })
@@ -140,7 +132,8 @@ pub(crate) fn sent_history(history: Vec<ModelExchange>) -> Vec<ModelExchange> {
 mod tests {
     use super::*;
     use crate::composable::models::types::{
-        ModelRequest, OpaqueContent, ToolCall, ToolCallDelta, ToolDefinition, ToolResult,
+        ModelRequest, OpaqueContent, TokenUsage, ToolCall, ToolCallDelta, ToolDefinition,
+        ToolResult,
     };
 
     fn settings(names: &[&str]) -> ModelSettings {

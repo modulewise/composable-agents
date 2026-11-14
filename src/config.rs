@@ -134,18 +134,14 @@ impl AgentConfigHandler {
                 PROVIDERS.join(", ")
             ),
         };
-        // `effort`, `include-reasoning` and `max-retries` are Messages API client
-        // settings, rejected for other providers. The client checks `effort`'s
+        // Every client sends `effort`. The Messages API client checks its
         // value when a session starts.
-        let messages_api = uri == ANTHROPIC_MESSAGES_CLIENT;
         if let Some(effort) = optional_string(&context, "effort", properties)? {
-            if !messages_api {
-                bail!(
-                    "{context}: 'effort' is only supported for provider 'anthropic', not '{provider}'"
-                );
-            }
             config.insert("effort".to_string(), json!(effort));
         }
+        // `include-reasoning` and `max-retries` are Messages API client
+        // settings, rejected for other providers.
+        let messages_api = uri == ANTHROPIC_MESSAGES_CLIENT;
         if let Some(include_reasoning) = optional_bool(&context, "include-reasoning", properties)? {
             if !messages_api {
                 bail!(
@@ -550,11 +546,30 @@ mod tests {
     }
 
     #[test]
+    fn the_effort_is_passed_to_a_chat_completions_client() {
+        for provider in ["ollama", "openai"] {
+            let mut handler = AgentConfigHandler::default();
+            let definitions = handler
+                .handle_definition(definition(
+                    "model",
+                    "other",
+                    json!({ "provider": provider, "name": "m", "effort": "high" }),
+                ))
+                .unwrap();
+            let produced = produced(definitions);
+            assert_eq!(
+                produced[&key("component", "other")]["config"]["effort"],
+                "high",
+                "{provider}"
+            );
+        }
+    }
+
+    #[test]
     fn messages_api_settings_are_rejected_for_a_model_without_that_client() {
-        for property in ["effort", "include-reasoning", "max-retries"] {
+        for property in ["include-reasoning", "max-retries"] {
             for provider in ["ollama", "openai"] {
                 let value = match property {
-                    "effort" => json!("low"),
                     "include-reasoning" => json!(true),
                     _ => json!(3),
                 };

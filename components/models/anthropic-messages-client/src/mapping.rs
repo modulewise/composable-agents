@@ -9,8 +9,8 @@ use model_client_support::sse::{self, Events};
 use model_client_support::types::{
     ContentDelta, ContentSource, MediaData, ModelDelta, ModelError, ModelExchange,
     ModelFinishReason, ModelInputItem, ModelOutputItem, ModelResponse, ModelSettings,
-    OpaqueContent, Reasoning, ResultContent, TokenUsage, ToolCall, ToolCallDelta, ToolChoice,
-    ToolDefinition,
+    OpaqueContent, Reasoning, RequestParameters, ResultContent, TokenUsage, ToolCall,
+    ToolCallDelta, ToolChoice, ToolDefinition,
 };
 use model_client_support::{
     Deltas, history_input_note, json_error_position, output_media_note, tool_result_media_note,
@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use wit_bindgen::rt::async_support::StreamReader;
 
-/// The `api` value of this client's opaque content.
+/// The `api` value of this client's calls and opaque content.
 pub(crate) const API: &str = "anthropic-messages";
 
 // === Outgoing request =======================================================
@@ -202,7 +202,7 @@ pub(crate) fn history_to_messages(history: &[ModelExchange]) -> Result<Vec<Messa
         match (&exchange.opaque_content, &exchange.output) {
             (Some(opaque), _) if opaque.api == API => {
                 let blocks: Vec<Value> = serde_json::from_str(&opaque.content).map_err(|e| {
-                    failure(format!(
+                    ModelError::new(format!(
                         "history holds {API} content that is not a list of blocks ({e})"
                     ))
                 })?;
@@ -306,6 +306,19 @@ impl std::str::FromStr for Effort {
     }
 }
 
+impl Effort {
+    /// The value as sent.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Effort::Low => "low",
+            Effort::Medium => "medium",
+            Effort::High => "high",
+            Effort::Xhigh => "xhigh",
+            Effort::Max => "max",
+        }
+    }
+}
+
 /// A valid `effort` value, for the error on an invalid one.
 pub(crate) const EFFORT_VALUES: &str = "one of low, medium, high, xhigh or max";
 
@@ -330,7 +343,7 @@ struct OutputFormat {
 // API doesn't support fails at the provider.
 fn output_format(output_schema: &str) -> Result<OutputFormat, ModelError> {
     let schema = serde_json::from_str(output_schema)
-        .map_err(|e| failure(format!("the output-schema is invalid JSON: {e}")))?;
+        .map_err(|e| ModelError::new(format!("the output-schema is invalid JSON: {e}")))?;
     Ok(OutputFormat {
         kind: "json_schema",
         schema,
@@ -383,6 +396,24 @@ impl ApiSettings {
                 .transpose()?,
         })
     }
+
+    /// The parameters a request sends, with `effort` and `max_tokens`.
+    pub(crate) fn parameters(
+        &self,
+        effort: Option<Effort>,
+        max_tokens: Option<u32>,
+    ) -> RequestParameters {
+        RequestParameters {
+            max_tokens,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            seed: None,
+            stop_sequences: self.stop_sequences.clone(),
+            reasoning_level: effort.map(|effort| effort.as_str().to_string()),
+            output_type: self.format.as_ref().map(|_| "json".to_string()),
+        }
+    }
 }
 
 /// The request body for one call.
@@ -413,14 +444,15 @@ pub(crate) fn build_request(
         }),
         output_config,
     };
-    serde_json::to_vec(&request).map_err(|e| failure(format!("failed to serialize request: {e}")))
+    serde_json::to_vec(&request)
+        .map_err(|e| ModelError::new(format!("failed to serialize request: {e}")))
 }
 
 // A tool definition in Messages API form, with its input schema parsed into
 // JSON. An invalid schema fails the session.
 fn to_tool(definition: &ToolDefinition) -> Result<Tool, ModelError> {
     let input_schema = serde_json::from_str(&definition.input_schema).map_err(|e| {
-        failure(format!(
+        ModelError::new(format!(
             "tool '{}' has an invalid input-schema: {e}",
             definition.name
         ))
@@ -660,18 +692,18 @@ pub(crate) async fn stream_response(
 fn parse_event(event: &sse::Event) -> Result<Event, ModelError> {
     let name = event.event_type.as_deref().unwrap_or_default();
     let data: Value = serde_json::from_str(&event.data).map_err(|e| {
-        failure(format!(
+        ModelError::new(format!(
             "the provider sent a {name:?} event that is not valid JSON ({})",
             json_error_position(&e)
         ))
     })?;
     if name.is_empty() || data.get("type").and_then(Value::as_str) != Some(name) {
-        return Err(failure(format!(
+        return Err(ModelError::new(format!(
             "the provider sent an event named {name:?} whose data has another type"
         )));
     }
     serde_json::from_value(data).map_err(|_| {
-        failure(format!(
+        ModelError::new(format!(
             "the provider sent a {name:?} event that is not valid"
         ))
     })
@@ -699,7 +731,7 @@ fn apply(acc: &mut Accumulator, event: Event) -> Result<Vec<ModelDelta>, ModelEr
         } => {
             let start: StartBlock =
                 serde_json::from_value(content_block.clone()).map_err(|_| {
-                    failure(format!(
+                    ModelError::new(format!(
                         "the provider sent content block {index} that is not valid"
                     ))
                 })?;
@@ -782,7 +814,7 @@ fn apply(acc: &mut Accumulator, event: Event) -> Result<Vec<ModelDelta>, ModelEr
             let block = acc.block(index);
             if !block.input_json.is_empty() {
                 let input: Value = serde_json::from_str(&block.input_json).map_err(|e| {
-                    failure(format!(
+                    ModelError::new(format!(
                         "the provider sent tool input for block {index} that is not valid JSON ({})",
                         json_error_position(&e)
                     ))
@@ -810,7 +842,10 @@ fn apply(acc: &mut Accumulator, event: Event) -> Result<Vec<ModelDelta>, ModelEr
             Vec::new()
         }
         Event::Error { error } => {
-            return Err(failure(format!("{}: {}", error.kind, error.message)));
+            return Err(ModelError {
+                code: Some(error.kind),
+                ..ModelError::new(error.message)
+            });
         }
         Event::Other => Vec::new(),
     })
@@ -821,7 +856,7 @@ fn apply(acc: &mut Accumulator, event: Event) -> Result<Vec<ModelDelta>, ModelEr
 // stream ended before `message_stop`.
 fn assemble(acc: Accumulator) -> Result<(ModelResponse, Option<Message>), ModelError> {
     if !acc.stopped {
-        return Err(failure(
+        return Err(ModelError::new(
             "the response stream ended before the message was complete".to_string(),
         ));
     }
@@ -878,7 +913,7 @@ fn assemble(acc: Accumulator) -> Result<(ModelResponse, Option<Message>), ModelE
                     api: API.to_string(),
                     content,
                 })
-                .map_err(|e| failure(format!("failed to keep the response's content: {e}")))
+                .map_err(|e| ModelError::new(format!("failed to keep the response's content: {e}")))
         })
         .transpose()?;
     let assistant = (!received.is_empty()).then_some(Message {
@@ -930,14 +965,6 @@ fn finish_reason(raw: &str) -> ModelFinishReason {
         "refusal" => ModelFinishReason::Blocked(raw_value),
         "pause_turn" => ModelFinishReason::Paused(raw_value),
         _ => ModelFinishReason::Other(raw_value),
-    }
-}
-
-fn failure(message: String) -> ModelError {
-    ModelError {
-        message,
-        status: None,
-        usage: TokenUsage::default(),
     }
 }
 
@@ -1604,7 +1631,9 @@ mod tests {
             r#"{"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}"#,
             r#"{"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": "late"}}"#,
         ]);
-        assert_eq!(outcome.unwrap_err().message, "overloaded_error: Overloaded");
+        let error = outcome.unwrap_err();
+        assert_eq!(error.code.as_deref(), Some("overloaded_error"));
+        assert_eq!(error.message, "Overloaded");
         assert!(deltas.is_empty(), "{deltas:?}");
 
         let (_, outcome) = fold(&[

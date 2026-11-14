@@ -16,14 +16,15 @@ mod mapping;
 
 use exports::composable::models::client::GuestSession;
 use model_client_support::types::{
-    ModelDelta, ModelError, ModelExchange, ModelInputItem, ModelRequest, ModelResponse,
-    ModelResponseStream, ModelSettings,
+    ModelCall, ModelDelta, ModelError, ModelExchange, ModelInputItem, ModelRequest, ModelResponse,
+    ModelSettings, RequestParameters,
 };
 use model_client_support::{
-    Client, Deltas, Outcome, Session, parsed_config, require_answered_tool_calls,
+    Client, Deltas, Outcome, Session, get_config, parsed_config, require_answered_tool_calls,
 };
 use wit_bindgen::rt::async_support::{FutureReader, FutureWriter, StreamReader, StreamWriter};
 
+const EFFORT_CONFIG: &str = "effort";
 const MAX_TOKENS_FIELD_CONFIG: &str = "max-tokens-field";
 
 /// A client of the Chat Completions API. It keeps the conversation history in
@@ -32,6 +33,8 @@ struct ChatCompletionsClient;
 
 /// The client's own config.
 struct ChatCompletionsConfig {
+    // Sent as `reasoning_effort`, as configured.
+    effort: Option<String>,
     max_tokens_field: mapping::MaxTokensField,
 }
 
@@ -47,11 +50,13 @@ impl Client for ChatCompletionsClient {
     // The assistant message.
     type Output = mapping::Message;
 
+    const API: &'static str = "chat-completions";
     const DEFAULT_BASE_URL: &'static str = "https://api.openai.com/v1";
     const PATH: &'static str = "/chat/completions";
 
     fn config() -> Result<ChatCompletionsConfig, ModelError> {
         Ok(ChatCompletionsConfig {
+            effort: get_config(EFFORT_CONFIG),
             max_tokens_field: parsed_config(
                 MAX_TOKENS_FIELD_CONFIG,
                 mapping::MAX_TOKENS_FIELD_VALUES,
@@ -93,9 +98,20 @@ impl Client for ChatCompletionsClient {
             model,
             &state.messages,
             &state.api_settings,
+            config.effort.as_deref(),
             config.max_tokens_field,
             max_tokens,
         )
+    }
+
+    fn parameters(
+        state: &ChatState,
+        config: &ChatCompletionsConfig,
+        max_tokens: Option<u32>,
+    ) -> RequestParameters {
+        state
+            .api_settings
+            .parameters(config.effort.as_deref(), max_tokens)
     }
 
     async fn read_response(
@@ -128,7 +144,7 @@ impl GuestSession for SessionState {
         Session::new(settings, history).map(SessionState)
     }
 
-    async fn call(&self, request: ModelRequest) -> Result<ModelResponseStream, ModelError> {
+    async fn call(&self, request: ModelRequest) -> ModelCall {
         self.0.call(request).await
     }
 

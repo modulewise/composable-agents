@@ -16,8 +16,8 @@ mod mapping;
 
 use exports::composable::models::client::GuestSession;
 use model_client_support::types::{
-    ModelDelta, ModelError, ModelExchange, ModelInputItem, ModelRequest, ModelResponse,
-    ModelResponseStream, ModelSettings,
+    ModelCall, ModelDelta, ModelError, ModelExchange, ModelInputItem, ModelRequest, ModelResponse,
+    ModelSettings, RequestParameters,
 };
 use model_client_support::{
     Client, Deltas, Outcome, Session, parsed_config, require_answered_tool_calls,
@@ -59,6 +59,7 @@ impl Client for MessagesClient {
     // The assistant turn, if the response has content.
     type Output = Option<mapping::Message>;
 
+    const API: &'static str = mapping::API;
     const DEFAULT_BASE_URL: &'static str = "https://api.anthropic.com/v1";
     const PATH: &'static str = "/messages";
     // The Messages API requires `max_tokens`. This leaves room for thinking,
@@ -132,6 +133,14 @@ impl Client for MessagesClient {
         )
     }
 
+    fn parameters(
+        state: &MessagesState,
+        config: &MessagesConfig,
+        max_tokens: Option<u32>,
+    ) -> RequestParameters {
+        state.api_settings.parameters(config.effort, max_tokens)
+    }
+
     async fn read_response(
         body: StreamReader<u8>,
         deltas: &mut Deltas,
@@ -162,7 +171,7 @@ impl GuestSession for SessionState {
         Session::new(settings, history).map(SessionState)
     }
 
-    async fn call(&self, request: ModelRequest) -> Result<ModelResponseStream, ModelError> {
+    async fn call(&self, request: ModelRequest) -> ModelCall {
         self.0.call(request).await
     }
 

@@ -27,6 +27,7 @@ wit_bindgen::generate!({
 });
 
 mod config;
+mod error;
 mod history;
 mod http;
 mod json;
