@@ -110,7 +110,7 @@ async fn run(
             max_tokens: None,
         })
         .await
-        .response
+        .and_then(|call| call.response)
     {
         Ok(stream) => stream,
         Err(e) => return failed(ids, &e.message, artifact, session.exchanges()),

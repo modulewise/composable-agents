@@ -1,0 +1,5 @@
+package composable-agents:model-client-interceptor-support@0.1.0;
+
+world model-client-interceptor-support {
+    import composable:models/client@0.1.0;
+}

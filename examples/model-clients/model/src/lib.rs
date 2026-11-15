@@ -35,7 +35,7 @@ impl Guest for Model {
         let stream = session
             .call(request)
             .await
-            .response
+            .and_then(|call| call.response)
             .map_err(|e| e.message)?;
 
         // Read the deltas to the end so the call can finish. Dropping them

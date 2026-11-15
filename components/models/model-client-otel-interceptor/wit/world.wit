@@ -1,0 +1,12 @@
+package composable-agents:model-client-otel-interceptor@0.1.0;
+
+world model-client-otel-interceptor {
+    import composable:models/client@0.1.0;
+    import wasi:otel/tracing@0.2.0-rc.2+p3;
+    import wasi:otel/logs@0.2.0-rc.2+p3;
+    import wasi:otel/types@0.2.0-rc.2+p3;
+    import wasi:clocks/system-clock@0.3.0;
+    import wasi:random/random@0.3.0;
+
+    export composable:models/client@0.1.0;
+}
