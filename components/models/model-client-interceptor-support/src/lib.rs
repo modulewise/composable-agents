@@ -88,7 +88,7 @@ pub trait CallInterceptor: Sized + 'static {
     }
 }
 
-/// Whether a call goes on after a delta.
+/// Whether a call continues after a delta.
 pub enum Flow {
     Continue,
     /// Stops the call. The error is its outcome.
