@@ -413,7 +413,7 @@ dependencies = [
 [[package]]
 name = "composable-interceptor"
 version = "0.5.0-alpha.5"
-source = "git+https://github.com/modulewise/composable-runtime?branch=main#f2ea285f0763d35245e8201b55faf24fa1b15bf2"
+source = "git+https://github.com/modulewise/composable-runtime?branch=main#3d46ada28e2e8885e807a0f5de705d5563f3b75c"
 dependencies = [
  "anyhow",
  "clap",
@@ -428,7 +428,7 @@ dependencies = [
 [[package]]
 name = "composable-otel"
 version = "0.5.0-alpha.5"
-source = "git+https://github.com/modulewise/composable-runtime?branch=main#f2ea285f0763d35245e8201b55faf24fa1b15bf2"
+source = "git+https://github.com/modulewise/composable-runtime?branch=main#3d46ada28e2e8885e807a0f5de705d5563f3b75c"
 dependencies = [
  "anyhow",
  "composable-runtime",
@@ -446,7 +446,7 @@ dependencies = [
 [[package]]
 name = "composable-runtime"
 version = "0.5.0-alpha.5"
-source = "git+https://github.com/modulewise/composable-runtime?branch=main#f2ea285f0763d35245e8201b55faf24fa1b15bf2"
+source = "git+https://github.com/modulewise/composable-runtime?branch=main#3d46ada28e2e8885e807a0f5de705d5563f3b75c"
 dependencies = [
  "anyhow",
  "bytes",
@@ -486,7 +486,7 @@ dependencies = [
 [[package]]
 name = "composable-tools"
 version = "0.5.0-alpha.5"
-source = "git+https://github.com/modulewise/composable-tools?branch=main#47a389e344f124c126ff0d7d6cb7167d6470ec51"
+source = "git+https://github.com/modulewise/composable-tools?branch=main#5f8bd4bfa396ecf42d3ade54847e1fb2bf9fc914"
 dependencies = [
  "anyhow",
  "composable-runtime",
@@ -2304,7 +2304,7 @@ dependencies = [
  "bytes",
  "getrandom 0.4.3",
  "lru-slab",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rand_pcg",
  "ring",
  "rustc-hash",
@@ -2374,9 +2374,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.10.3"
+version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65c9fb96cbc91e3478eaae79a69fcd3f1ae4ad052e471fe6732fff548984b4af"
+checksum = "8f6fa277c67e6ea590466f04c3fe82cb509f0864fe470643e5570de9514a9b11"
 dependencies = [
  "chacha20",
  "getrandom 0.4.3",
@@ -4148,7 +4148,7 @@ dependencies = [
  "bitflags",
  "bytes",
  "futures",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rustix",
  "rustix-linux-procfs",
  "thiserror 2.0.21",

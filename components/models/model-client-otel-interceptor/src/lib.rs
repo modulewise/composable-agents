@@ -27,6 +27,9 @@ use wit_bindgen::rt::async_support::{FutureReader, FutureWriter, StreamReader, S
 const SCOPE_NAME: &str = "modulewise.composable.models.client";
 const SCOPE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+// The severity number of WARN.
+const WARN_SEVERITY: u8 = 13;
+
 struct Otel;
 
 impl SessionInterceptor for Otel {
@@ -126,12 +129,12 @@ fn has_output(content: &ContentDelta) -> bool {
 }
 
 impl ChatSpan {
-    // Starts a span as a child of the host's span, or in a new trace when the
-    // host has none.
+    // Starts a span as a child of the current span, or in a new trace when
+    // there is none.
     fn start() -> Self {
         let start = system_clock::now();
-        let outer = tracing::outer_span_context();
-        let (trace_id, parent_span_id, trace_flags, trace_state) = if is_empty_context(&outer) {
+        let parent = tracing::current_span_context();
+        let (trace_id, parent_span_id, trace_flags, trace_state) = if is_empty_context(&parent) {
             (
                 new_trace_id(),
                 String::new(),
@@ -140,10 +143,10 @@ impl ChatSpan {
             )
         } else {
             (
-                outer.trace_id,
-                outer.span_id,
-                outer.trace_flags,
-                outer.trace_state,
+                parent.trace_id,
+                parent.span_id,
+                parent.trace_flags,
+                parent.trace_state,
             )
         };
         let context = tracing::SpanContext {
@@ -246,7 +249,7 @@ impl ChatSpan {
             timestamp: Some(time),
             observed_timestamp: None,
             severity_text: Some("WARN".to_string()),
-            severity_number: Some(13),
+            severity_number: Some(WARN_SEVERITY),
             body: None,
             attributes: Some(vec![kv("exception.message", error.message.as_str())]),
             event_name: Some("gen_ai.client.inference.exception".to_string()),
@@ -329,7 +332,8 @@ fn new_trace_id() -> String {
     )
 }
 
-// The host returns all-zero trace and span ids when it has no span.
+// The host returns all-zero trace and span ids when no span is open and no
+// trace was propagated.
 fn is_empty_context(context: &tracing::SpanContext) -> bool {
     context.trace_id.chars().all(|c| c == '0') && context.span_id.chars().all(|c| c == '0')
 }
