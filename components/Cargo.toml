@@ -5,6 +5,8 @@ members = [
     "agents/tool-calling-agent",
     "models/anthropic-messages-client",
     "models/chat-completions-client",
+    "models/model-client-interceptor-support",
+    "models/model-client-otel-interceptor",
     "models/model-client-support",
 ]
 resolver = "3"

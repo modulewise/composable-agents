@@ -71,3 +71,22 @@ To invoke the agent directly (set the environment variables shown above first):
 ```sh
 agents invoke agent.toml tools.toml gpt.toml -- assistant "What is 144 divided by 12, plus 3?"
 ```
+
+## Tracing Model Calls
+
+```sh
+./run.sh --otel gemma
+```
+
+With `--otel`, the script adds `otel.toml` and invokes `traced-assistant`, an
+agent that is the same as `assistant` except that it imports `traced-model`.
+That component is `model-client-otel-interceptor`, which wraps `model` and
+emits a `chat` span for each model call, following the OpenTelemetry GenAI
+semantic conventions. The spans go to an OTLP collector on `localhost:4317`,
+such as Jaeger, under the service name `tool-calling-agent-example`. Each has
+the model, provider, and server, the parameters sent, the finish reason, the
+token counts, and the time to the first chunk.
+
+The `otel` capability exports the spans. The interceptor also imports the
+`wasi:clocks` and `wasi:random` capabilities. See
+[components/models](../../components/models) for the attributes it records.

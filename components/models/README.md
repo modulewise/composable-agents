@@ -23,10 +23,11 @@ A `session` serves one agent invocation:
   parameters sent, and the response as it arrives. The response is a stream of
   deltas (content fragments and token counts) and a future of the final
   `model-response`. A request's `max-tokens` limits the call, taking precedence
-  over the session's, then the config's, then the client's default. The
-  response is an error only on input the client cannot send, with nothing sent
-  or recorded. A failure sending the request or reading the response resolves
-  the future.
+  over the session's, then the config's, then the client's default. `call`
+  fails, with nothing sent or recorded, when no client receives the call (e.g.
+  an interceptor refuses it). The response is an error only on input the
+  client cannot send, also with nothing sent or recorded. A failure sending the
+  request or reading the response resolves the future.
 - **`exchanges()`** returns the calls made within the session (each request
   with its output, provider, models, and token counts), for the caller to add
   to the conversation's history. A call's exchange is complete once the call's
@@ -111,3 +112,38 @@ It imports `wasi:clocks/monotonic-clock` for any waits between retries.
 > phase, not yet intended for any "real world" usage.
 
 Example: [`examples/model-clients`](../../examples/model-clients)
+
+## Interceptors
+
+An interceptor exports `client` and imports it, wrapping another client.
+`model-client-interceptor-support` provides a `Session` that relays each
+response, so an interceptor implements two constructors and any callbacks it
+needs:
+
+- `SessionInterceptor`: `new` (creates the session's interceptor, and may
+  change the settings or history, or fail the session) and `new_call`
+  (creates a call's interceptor, and may change the request, or refuse the
+  call), plus the `on_exchanges` callback.
+- `CallInterceptor`: the `on_describe` (sees the `model-call`), `on_delta`
+  (may change a delta, or stop the call) and `on_end` (returns the outcome the
+  caller gets) callbacks.
+
+Each callback has a default that changes nothing. A `SessionInterceptor` also
+creates each call's stream and future from its own bindings, as a client
+does.
+
+## model-client-otel-interceptor
+
+Emits a `chat {model}` client span for each call a client receives, as a child
+of the host's span, following the OpenTelemetry GenAI semantic conventions. It
+records the requested model, provider, server and parameters sent, the
+response's model, id, finish reason and token counts, and the time to the
+first chunk. A failed call's span has an `Error` status and an `error.type`
+(the provider's error code, else the status code, else `_OTHER`), and a
+`gen_ai.client.inference.exception` log record. A call the caller canceled
+isn't a failure, so its status stays unset, with the finish reason `error` and
+`gen_ai.response.status` set to `cancelled`.
+
+It imports a patched version of `wasi:otel` tracing, logs, and types
+(`0.2.0-rc.2+p3`), the system clock, and random, which composable-runtime's
+`otel`, `wasi:clocks` and `wasi:random` capabilities provide.

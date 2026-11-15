@@ -1,0 +1,29 @@
+# A second agent, traced-assistant, which is the same as assistant except that
+# it imports traced-model, an interceptor that wraps model and emits a span for
+# each model call.
+
+[agent.traced-assistant]
+model = "traced-model"
+toolset = "tools"
+description = "Answers arithmetic questions with calculator tools"
+version = "0.1.0"
+instructions = "Use the calculator tools for every arithmetic step. Answer in one sentence."
+report-tool-calls = true
+
+[component.traced-model]
+uri = "oci://localhost:5001/composable-agents/model-client-otel-interceptor:latest"
+imports = ["model", "otel", "clocks", "random"]
+
+[capability.otel]
+type = "otel"
+endpoint = "http://localhost:4317"
+protocol = "grpc"
+
+[capability.otel.resource]
+"service.name" = "tool-calling-agent-example"
+
+[capability.clocks]
+type = "wasi:clocks"
+
+[capability.random]
+type = "wasi:random"

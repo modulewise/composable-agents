@@ -330,6 +330,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "model-client-interceptor-support"
+version = "0.1.0"
+dependencies = [
+ "wit-bindgen",
+]
+
+[[package]]
+name = "model-client-otel-interceptor"
+version = "0.1.0"
+dependencies = [
+ "model-client-interceptor-support",
+ "serde_json",
+ "wit-bindgen",
+]
+
+[[package]]
 name = "model-client-support"
 version = "0.1.0"
 dependencies = [

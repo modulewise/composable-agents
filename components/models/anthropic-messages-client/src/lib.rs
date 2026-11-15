@@ -171,8 +171,8 @@ impl GuestSession for SessionState {
         Session::new(settings, history).map(SessionState)
     }
 
-    async fn call(&self, request: ModelRequest) -> ModelCall {
-        self.0.call(request).await
+    async fn call(&self, request: ModelRequest) -> Result<ModelCall, ModelError> {
+        Ok(self.0.call(request).await)
     }
 
     fn exchanges(&self) -> Vec<ModelExchange> {
