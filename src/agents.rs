@@ -106,7 +106,7 @@ impl AgentHost {
                     .call_invoke(accessor, request)
                     .await?
                 {
-                    Ok(stream) => stream,
+                    Ok(invocation) => invocation.response,
                     Err(error) => return Ok(Err(error)),
                 };
 

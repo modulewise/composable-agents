@@ -19,8 +19,8 @@ use agent_support::model_types::{
     ContentDelta, ModelDelta, ModelExchange, ModelInputItem, ModelRequest, ModelSettings,
 };
 use agent_support::types::{
-    AgentError, AgentEvent, AgentFinishReason, AgentMetadata, AgentRequest, AgentResponse,
-    AgentResponseStream, TaskState, TaskStatus,
+    AgentError, AgentEvent, AgentFinishReason, AgentInvocation, AgentMetadata, AgentRequest,
+    AgentResponse, AgentResponseStream, TaskState, TaskStatus,
 };
 use agent_support::{
     INSTRUCTIONS_CONFIG, INTERNAL_ERROR, INVALID_PARAMS, ReasoningRun, TaskIds, TextArtifact,
@@ -36,7 +36,7 @@ impl exports::composable::agents::agent::Guest for Component {
         agent_metadata()
     }
 
-    async fn invoke(request: AgentRequest) -> Result<AgentResponseStream, AgentError> {
+    async fn invoke(request: AgentRequest) -> Result<AgentInvocation, AgentError> {
         let input = model_input(&request.message.parts);
         if input.is_empty() {
             return Err(AgentError {
@@ -76,18 +76,20 @@ impl exports::composable::agents::agent::Guest for Component {
             })
         });
 
-        let response = AgentResponseStream {
+        let invocation = AgentInvocation {
             task_id: ids.task_id.clone(),
             context_id: ids.context_id.clone(),
             activated_extensions: Vec::new(),
-            events: events_rx,
-            result: outcome_rx,
+            response: AgentResponseStream {
+                events: events_rx,
+                result: outcome_rx,
+            },
         };
         spawn_local(async move {
             let outcome = run(session, input, &ids, events_tx).await;
             let _ = outcome_tx.write(Ok(outcome)).await;
         });
-        Ok(response)
+        Ok(invocation)
     }
 }
 
