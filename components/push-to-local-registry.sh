@@ -17,7 +17,14 @@ cd "$(dirname "$0")"
 REGISTRY="localhost:5001"
 REPOSITORY="composable-agents"
 TAG="latest"
-COMPONENTS=(anthropic-messages-client chat-agent chat-completions-client model-client-otel-interceptor tool-calling-agent)
+COMPONENTS=(
+  agent-otel-interceptor
+  anthropic-messages-client
+  chat-agent
+  chat-completions-client
+  model-client-otel-interceptor
+  tool-calling-agent
+)
 
 if ! command -v wkg &>/dev/null; then
   echo "Error: wkg not found (cargo install wkg)"

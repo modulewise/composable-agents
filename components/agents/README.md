@@ -86,3 +86,43 @@ tool that didn't run, so every tool call in the history is answered.
 | `instructions` | optional: the model's instructions (`model-settings.instructions`) |
 | `max-turns` | default: 8; the most model calls allowed per invocation |
 | `report-tool-calls` | default: `false`; whether to emit called tool names in status messages |
+
+## Interceptors
+
+An interceptor exports `agent` and also imports it, wrapping another agent.
+`agent-interceptor-support` provides `invoke` and `metadata` functions that
+relay each task's response, so an interceptor implements one constructor and
+any callbacks it needs:
+
+- `AgentInterceptor`: `new_invocation` (creates an invocation's interceptor,
+  and may change the request, or return an error, in which case no task
+  starts), plus the `on_metadata` callback.
+- `InvocationInterceptor`: the `on_invocation` (sees the `agent-invocation`),
+  `on_event` (may change an event, and returns an `Action`), `on_result`
+  (returns the outcome the caller receives) and `on_error` (sees the error the
+  agent returned instead of starting a task) callbacks.
+
+Each callback has a no-op default. `on_event` returning
+`Action::Reject(message)` rejects the task. The event isn't relayed, the
+caller's events end, and the outcome is the agent's response with the
+`rejected` state and that status message. `agent_message` builds that message
+from the invocation's ids, with an id provided by the interceptor. An
+`AgentInterceptor` also creates each task's stream and future from its own
+bindings, as an agent does.
+
+## agent-otel-interceptor
+
+Emits an `invoke_agent {name}` internal span for each invocation, as a child of
+the current span, following the OpenTelemetry GenAI semantic conventions. The
+span is open while the agent runs, so the `chat` spans of its model calls are
+its children. It records the agent's name, description, and version (from its
+`metadata`), the conversation id (the invocation's `context-id`), the output
+type when the request accepts exactly one output mode that has a type, the
+finish reason, and the input and output tokens summed over the invocation's
+model calls. A task that ends `failed` or `rejected`, or an error from the
+agent, has an `Error` status and an `error.type` (`_OTHER`, `rejected`, or the
+error's code), and a `gen_ai.invoke_agent.exception` log record.
+
+It imports the system clock, random, and patched `wasi:otel` (`0.2.0-rc.2+p3`)
+WIT for tracing, logs, and types. Those are provided by the composable-runtime
+`wasi:clocks`, `wasi:random`, and `otel` capabilities.
