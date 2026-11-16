@@ -23,9 +23,10 @@ An agent handles each `invoke` as a task:
 - **`metadata()`** describes the agent (name, skills, input and output modes),
   which may contribute to an A2A agent card.
 - **`invoke(request)`** takes one message, with the conversation's earlier
-  model exchanges as `history`, and returns the task's events as they occur
-  (status updates and artifact chunks), with a future of the final
-  `agent-response`.
+  model exchanges as `history`, and returns an `agent-invocation` with the
+  task's ids, the extensions the agent activated, and the response. The
+  response is the task's events as they occur (status updates and artifact
+  chunks), with a future of the final `agent-response`.
 
 The response carries the task's final status, its assembled artifacts, the
 model exchanges the invocation made (with each call's token counts, for the

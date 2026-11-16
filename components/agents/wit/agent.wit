@@ -4,11 +4,11 @@
 /// Depending on the agent, it may also call tools and/or other agents.
 
 interface agent {
-    use types.{agent-metadata, agent-request, agent-response-stream, agent-error};
+    use types.{agent-metadata, agent-request, agent-invocation, agent-error};
 
     /// Information about the agent, which may contribute to an A2A agent card.
     metadata: async func() -> result<agent-metadata, string>;
 
     /// Handle a request as a task. Stream the task's events, then its outcome.
-    invoke: async func(request: agent-request) -> result<agent-response-stream, agent-error>;
+    invoke: async func(request: agent-request) -> result<agent-invocation, agent-error>;
 }
