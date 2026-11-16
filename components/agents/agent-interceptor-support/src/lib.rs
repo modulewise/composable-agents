@@ -27,7 +27,8 @@ wit_bindgen::generate!({
 pub use composable::agents::{agent, types};
 pub use composable::models::types as model_types;
 
-use std::future::Future;
+use std::future::{Future, IntoFuture, poll_fn};
+use std::pin::pin;
 
 use types::{
     AgentError, AgentEvent, AgentInvocation, AgentMetadata, AgentRequest, AgentResponse,
@@ -68,6 +69,11 @@ pub trait AgentInterceptor: 'static {
     /// A new future for a task's outcome (`wit_future::new(default)`). The
     /// interceptor creates it because its bindings define the payload type.
     fn outcome_future(default: fn() -> Outcome) -> (FutureWriter<Outcome>, FutureReader<Outcome>);
+
+    /// A new future for a task's cancel signal (`wit_future::new(default)`).
+    /// The interceptor creates it because its bindings define the payload
+    /// type.
+    fn cancel_future(default: fn()) -> (FutureWriter<()>, FutureReader<()>);
 }
 
 /// One invocation's interceptor.
@@ -99,7 +105,8 @@ pub enum Action {
     /// Relay the event, and continue.
     Continue,
     /// Reject the task with this status message, without relaying the event.
-    /// The task's outcome is the agent's response with the `rejected` state.
+    /// The agent's task is canceled, and its outcome is the agent's response
+    /// with the `rejected` state.
     Reject(Message),
 }
 
@@ -109,12 +116,15 @@ pub async fn metadata<I: AgentInterceptor>() -> Result<AgentMetadata, String> {
 }
 
 /// Creates the invocation's interceptor, sends the request to the agent, and
-/// relays the task's response.
+/// relays the task's response. The agent's task is canceled when `cancel`
+/// resolves or the invocation's interceptor rejects the task.
 pub async fn invoke<I: AgentInterceptor>(
     mut request: AgentRequest,
+    cancel: FutureReader<()>,
 ) -> Result<AgentInvocation, AgentError> {
     let mut interceptor = I::new_invocation(&mut request).await?;
-    let invocation = match agent::invoke(request).await {
+    let (target_cancel, target_cancel_reader) = I::cancel_future(|| ());
+    let invocation = match agent::invoke(request, target_cancel_reader).await {
         Ok(invocation) => invocation,
         Err(error) => return Err(interceptor.on_error(error)),
     };
@@ -129,7 +139,7 @@ pub async fn invoke<I: AgentInterceptor>(
         task_id,
         context_id,
         activated_extensions,
-        response: relay::<I>(response, interceptor),
+        response: relay::<I>(response, interceptor, cancel, target_cancel),
     })
 }
 
@@ -156,16 +166,25 @@ pub fn agent_message(event: &AgentEvent, message_id: String, text: String) -> Me
     }
 }
 
-// Relays the agent's response to the caller in a new stream and future. The
+// Relays the target's response to the caller in a new stream and future. The
 // caller's events end before its future resolves.
 fn relay<I: AgentInterceptor>(
     stream: AgentResponseStream,
     interceptor: I::Invocation,
+    cancel: FutureReader<()>,
+    target_cancel: FutureWriter<()>,
 ) -> AgentResponseStream {
     let (caller_events, events) = I::event_stream();
     let (caller_outcome, outcome) = I::outcome_future(dropped);
     spawn_local(async move {
-        let (interceptor, rejection) = forward(stream.events, caller_events, interceptor).await;
+        let (interceptor, rejection) = forward(
+            stream.events,
+            caller_events,
+            interceptor,
+            cancel,
+            target_cancel,
+        )
+        .await;
         let result = match (stream.result.await, rejection) {
             (Ok(mut response), Some(message)) => {
                 response.status = TaskStatus {
@@ -185,24 +204,51 @@ fn relay<I: AgentInterceptor>(
     }
 }
 
-// Forwards each event to the caller until the events end, the caller stops
-// reading them, or the invocation's interceptor rejects the task, returning
-// the rejection's status message. Both ends are dropped on return, which ends
-// the caller's events.
+// Forwards each event to the caller until the target's events end or the
+// invocation's interceptor rejects the task, returning the rejection's status
+// message. Dropping `target_cancel` cancels the target's task, which happens
+// when `cancel` resolves or the task is rejected. Once the caller stops
+// reading, the interceptor still sees each event, which is then dropped. Both
+// event ends are dropped on return, which ends the caller's events.
 async fn forward<C: InvocationInterceptor>(
     mut events: StreamReader<AgentEvent>,
-    mut caller: StreamWriter<AgentEvent>,
+    caller: StreamWriter<AgentEvent>,
     mut interceptor: C,
+    cancel: FutureReader<()>,
+    target_cancel: FutureWriter<()>,
 ) -> (C, Option<Message>) {
-    while let Some(mut event) = events.next().await {
+    let mut caller = Some(caller);
+    let mut cancel = Some(pin!(cancel.into_future()));
+    let mut target_cancel = Some(target_cancel);
+    loop {
+        // The next event. The caller's cancel is passed on to the target
+        // while the event is read, so the read is not interrupted.
+        let next = {
+            let mut next = pin!(events.next());
+            poll_fn(|cx| {
+                if let Some(pending) = &mut cancel
+                    && pending.as_mut().poll(cx).is_ready()
+                {
+                    cancel = None;
+                    target_cancel = None;
+                }
+                next.as_mut().poll(cx)
+            })
+            .await
+        };
+        let Some(mut event) = next else {
+            return (interceptor, None);
+        };
         if let Action::Reject(message) = interceptor.on_event(&mut event) {
+            drop(target_cancel);
             return (interceptor, Some(message));
         }
-        if caller.write_one(event).await.is_some() {
-            return (interceptor, None);
+        if let Some(writer) = &mut caller
+            && writer.write_one(event).await.is_some()
+        {
+            caller = None;
         }
     }
-    (interceptor, None)
 }
 
 fn dropped() -> Outcome {

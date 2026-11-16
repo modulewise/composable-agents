@@ -2,6 +2,7 @@
 //! components that export it, with their metadata. Supports invoking one of
 //! those components with its events and outcome read through typed bindings.
 
+use std::convert::Infallible;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -12,7 +13,7 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::PollSender;
 use wasmtime::StoreContextMut;
-use wasmtime::component::{FutureConsumer, Source, StreamConsumer, StreamResult};
+use wasmtime::component::{FutureConsumer, FutureReader, Source, StreamConsumer, StreamResult};
 
 use crate::bindings::BaseAgent;
 use crate::bindings::composable::agents::types::{
@@ -85,14 +86,14 @@ impl AgentHost {
     }
 
     /// Invoke `agent` with `request`, handing each event to `on_event` as it
-    /// arrives, and return the outcome. When `on_event` returns `false`, the
-    /// host stops reading and drops the event stream, which cancels the task.
-    /// In that case, the outcome reports the cancellation.
+    /// arrives, and return the outcome. The task is canceled when `cancel`
+    /// resolves, and the outcome then reports the cancellation.
     pub async fn invoke(
         &self,
         agent: &str,
         request: AgentRequest,
-        mut on_event: impl FnMut(AgentEvent) -> bool + Send,
+        cancel: impl Future<Output = ()> + Send + 'static,
+        mut on_event: impl FnMut(AgentEvent) + Send,
     ) -> Result<Outcome> {
         if !self.agents.iter().any(|name| name == agent) {
             bail!("unknown agent '{agent}'");
@@ -101,9 +102,15 @@ impl AgentHost {
         instance
             .run_concurrent(async move |accessor, instance| -> Result<Outcome> {
                 let bindings = accessor.with(|mut store| BaseAgent::new(&mut store, &instance))?;
+                let cancel = accessor.with(|mut store| {
+                    FutureReader::new(&mut store, async move {
+                        cancel.await;
+                        Ok::<(), Infallible>(())
+                    })
+                })?;
                 let stream = match bindings
                     .composable_agents_agent()
-                    .call_invoke(accessor, request)
+                    .call_invoke(accessor, request, cancel)
                     .await?
                 {
                     Ok(invocation) => invocation.response,
@@ -124,11 +131,8 @@ impl AgentHost {
                 // The agent runs only while this closure does, so it reads the
                 // events to their end and the outcome here.
                 while let Some(event) = events_rx.recv().await {
-                    if !on_event(event) {
-                        break;
-                    }
+                    on_event(event);
                 }
-                drop(events_rx);
                 Ok(outcome_rx.await?)
             })
             .await?
@@ -377,7 +381,7 @@ mod tests {
             None,
         );
         let error = host
-            .invoke("local", request(), |_| true)
+            .invoke("local", request(), std::future::pending(), |_| {})
             .await
             .unwrap_err()
             .to_string();

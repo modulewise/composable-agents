@@ -51,6 +51,10 @@ impl AgentInterceptor for Otel {
     fn outcome_future(default: fn() -> Outcome) -> (FutureWriter<Outcome>, FutureReader<Outcome>) {
         wit_future::new(default)
     }
+
+    fn cancel_future(default: fn()) -> (FutureWriter<()>, FutureReader<()>) {
+        wit_future::new(default)
+    }
 }
 
 // An `invoke_agent` span, from the start of an invocation to its outcome.
@@ -315,8 +319,11 @@ impl Guest for Component {
         agent_interceptor_support::metadata::<Otel>().await
     }
 
-    async fn invoke(request: AgentRequest) -> Result<AgentInvocation, AgentError> {
-        agent_interceptor_support::invoke::<Otel>(request).await
+    async fn invoke(
+        request: AgentRequest,
+        cancel: FutureReader<()>,
+    ) -> Result<AgentInvocation, AgentError> {
+        agent_interceptor_support::invoke::<Otel>(request, cancel).await
     }
 }
 

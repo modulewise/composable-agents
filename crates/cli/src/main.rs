@@ -4,6 +4,7 @@ use serde_json::{Map, Value};
 use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use tokio::sync::oneshot;
 use tracing_subscriber::EnvFilter;
 
 use composable_agents::model_types::{ModelFinishReason, TokenUsage};
@@ -95,10 +96,23 @@ async fn invoke(host: &AgentHost, agent: &str, text: String) -> Result<ExitCode>
     let mut stdout = std::io::stdout();
     let terminal = stdout.is_terminal();
     let mut needs_newline = false;
+    // Dropping the sender cancels the task, which the CLI does when stdout
+    // fails.
+    let (cancel, canceled) = oneshot::channel::<()>();
+    let mut cancel = Some(cancel);
     let outcome = host
-        .invoke(agent, request(text), |event| {
-            show_event(event, &mut stdout, terminal, &mut needs_newline)
-        })
+        .invoke(
+            agent,
+            request(text),
+            async move {
+                let _ = canceled.await;
+            },
+            |event| {
+                if !show_event(event, &mut stdout, terminal, &mut needs_newline) {
+                    cancel = None;
+                }
+            },
+        )
         .await?;
     // If stdout has failed, the task was canceled, so the error is ignored.
     if needs_newline {

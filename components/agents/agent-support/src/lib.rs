@@ -29,6 +29,7 @@ wit_bindgen::generate!({
 });
 
 mod artifact;
+mod cancel;
 mod card;
 mod config;
 mod error;
@@ -42,9 +43,10 @@ pub use wasi::config::store as config_store;
 pub use wasi::random::random;
 
 pub use artifact::TextArtifact;
+pub use cancel::Cancel;
 pub use card::agent_metadata;
 pub use config::{INSTRUCTIONS_CONFIG, get_config, parse_config, required_config};
 pub use error::{INTERNAL_ERROR, INVALID_PARAMS, session_error};
-pub use events::{TaskIds, agent_message, new_id, send, send_all, status_event, text_part};
+pub use events::{Events, TaskIds, agent_message, new_id, status_event, text_part};
 pub use input::{OCTET_STREAM, model_input, response_text};
 pub use reasoning::{ReasoningRun, reasoning_event, reasoning_runs};
