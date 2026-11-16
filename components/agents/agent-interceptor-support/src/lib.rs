@@ -133,12 +133,16 @@ pub async fn invoke<I: AgentInterceptor>(
     })
 }
 
-/// A status message from the agent in `invocation`'s task, with one text part.
-pub fn agent_message(invocation: &AgentInvocation, message_id: String, text: String) -> Message {
+/// A status message from the agent in `event`'s task, with one text part.
+pub fn agent_message(event: &AgentEvent, message_id: String, text: String) -> Message {
+    let (task_id, context_id) = match event {
+        AgentEvent::Status(event) => (&event.task_id, &event.context_id),
+        AgentEvent::Artifact(event) => (&event.task_id, &event.context_id),
+    };
     Message {
         message_id,
-        context_id: Some(invocation.context_id.clone()),
-        task_id: Some(invocation.task_id.clone()),
+        context_id: Some(context_id.clone()),
+        task_id: Some(task_id.clone()),
         role: Role::Agent,
         parts: vec![Part {
             content: PartContent::Text(text),

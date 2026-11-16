@@ -31,6 +31,7 @@ wit_bindgen::generate!({
 mod artifact;
 mod card;
 mod config;
+mod error;
 mod events;
 mod input;
 mod reasoning;
@@ -43,12 +44,7 @@ pub use wasi::random::random;
 pub use artifact::TextArtifact;
 pub use card::agent_metadata;
 pub use config::{INSTRUCTIONS_CONFIG, get_config, parse_config, required_config};
+pub use error::{INTERNAL_ERROR, INVALID_PARAMS, session_error};
 pub use events::{TaskIds, agent_message, new_id, send, send_all, status_event, text_part};
 pub use input::{OCTET_STREAM, model_input, response_text};
 pub use reasoning::{ReasoningRun, reasoning_event, reasoning_runs};
-
-/// The JSON-RPC error code for a request the agent cannot accept.
-pub const INVALID_PARAMS: i32 = -32602;
-
-/// The JSON-RPC error code for a failure of the agent itself.
-pub const INTERNAL_ERROR: i32 = -32603;

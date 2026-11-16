@@ -106,9 +106,9 @@ Each callback has a no-op default. `on_event` returning
 `Action::Reject(message)` rejects the task. The event isn't relayed, the
 caller's events end, and the outcome is the agent's response with the
 `rejected` state and that status message. `agent_message` builds that message
-from the invocation's ids, with an id provided by the interceptor. An
-`AgentInterceptor` also creates each task's stream and future from its own
-bindings, as an agent does.
+from the event's task and context ids, with a message id provided by the
+interceptor. An `AgentInterceptor` also creates each task's stream and future
+from its own bindings, as an agent does.
 
 ## agent-otel-interceptor
 

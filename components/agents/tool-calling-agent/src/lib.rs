@@ -33,7 +33,7 @@ use agent_support::types::{
 use agent_support::{
     INSTRUCTIONS_CONFIG, INTERNAL_ERROR, INVALID_PARAMS, OCTET_STREAM, ReasoningRun, TaskIds,
     TextArtifact, agent_message, agent_metadata, get_config, model_input, new_id, parse_config,
-    reasoning_event, reasoning_runs, response_text, send, send_all, status_event,
+    reasoning_event, reasoning_runs, response_text, send, send_all, session_error, status_event,
 };
 use composable::models::client::Session;
 use composable::tools::toolset;
@@ -88,11 +88,7 @@ impl exports::composable::agents::agent::Guest for Component {
             seed: None,
             stop_sequences: None,
         };
-        let session = Session::new(&settings, &request.history).map_err(|e| AgentError {
-            code: INVALID_PARAMS,
-            message: format!("invalid history: {}", e.message),
-            data: None,
-        })?;
+        let session = Session::new(&settings, &request.history).map_err(session_error)?;
 
         let ids = TaskIds {
             task_id: request.task_id.unwrap_or_else(new_id),

@@ -28,7 +28,7 @@ pub use composable::models::{client, types};
 
 use types::{
     ModelCall, ModelDelta, ModelError, ModelExchange, ModelRequest, ModelResponse,
-    ModelResponseStream, ModelSettings,
+    ModelResponseStream, ModelSettings, SessionError,
 };
 use wit_bindgen::rt::async_support::{
     FutureReader, FutureWriter, StreamReader, StreamWriter, spawn_local,
@@ -43,11 +43,12 @@ pub trait SessionInterceptor: Sized + 'static {
     type Call: CallInterceptor;
 
     /// Creates the session's interceptor, before the client's session is
-    /// created. May change the settings or history, or fail the session.
+    /// created. May change the settings or history, or fail the session with
+    /// the input it cannot accept.
     fn new(
         settings: &mut ModelSettings,
         history: &mut Vec<ModelExchange>,
-    ) -> Result<Self, ModelError>;
+    ) -> Result<Self, SessionError>;
 
     /// Creates a call's interceptor, before the client gets the call. May
     /// change the request, or refuse the call, which then fails with nothing
@@ -119,7 +120,7 @@ impl<I: SessionInterceptor> Session<I> {
     pub fn new(
         mut settings: ModelSettings,
         mut history: Vec<ModelExchange>,
-    ) -> Result<Self, ModelError> {
+    ) -> Result<Self, SessionError> {
         let interceptor = I::new(&mut settings, &mut history)?;
         let target = client::Session::new(&settings, &history)?;
         Ok(Session {

@@ -11,7 +11,7 @@ use wit_bindgen::rt::async_support::{
 
 use crate::composable::models::types::{
     ModelCall, ModelDelta, ModelError, ModelExchange, ModelInputItem, ModelRequest, ModelResponse,
-    ModelResponseStream, ModelSettings, RequestParameters, TokenUsage,
+    ModelResponseStream, ModelSettings, RequestParameters, SessionError, TokenUsage,
 };
 use crate::config::CommonConfig;
 use crate::http::send_request;
@@ -64,7 +64,7 @@ pub trait Client: 'static {
     fn start(
         settings: &ModelSettings,
         history: &[ModelExchange],
-    ) -> Result<Self::State, ModelError>;
+    ) -> Result<Self::State, SessionError>;
 
     /// Adds a new call's input to the state. Fails on input the client cannot
     /// send, before the call is recorded.
@@ -151,10 +151,11 @@ pub struct Session<C: Client> {
 impl<C: Client> Session<C> {
     /// Fails on missing or invalid config, invalid tool names, or history the
     /// client cannot use.
-    pub fn new(settings: ModelSettings, history: Vec<ModelExchange>) -> Result<Self, ModelError> {
-        let common = CommonConfig::load(C::DEFAULT_BASE_URL, C::PATH)?;
-        let config = C::config()?;
-        let names = ToolNames::new(&settings)?;
+    pub fn new(settings: ModelSettings, history: Vec<ModelExchange>) -> Result<Self, SessionError> {
+        let common =
+            CommonConfig::load(C::DEFAULT_BASE_URL, C::PATH).map_err(SessionError::Config)?;
+        let config = C::config().map_err(SessionError::Config)?;
+        let names = ToolNames::new(&settings).map_err(SessionError::Settings)?;
         let settings = sent_settings(&settings);
         let state = C::start(&settings, &sent_history(history))?;
         Ok(Session {
