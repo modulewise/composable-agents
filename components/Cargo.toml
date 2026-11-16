@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "agents/agent-interceptor-support",
     "agents/agent-support",
     "agents/chat-agent",
     "agents/tool-calling-agent",

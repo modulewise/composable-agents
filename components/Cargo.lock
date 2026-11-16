@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "agent-interceptor-support"
+version = "0.1.0"
+dependencies = [
+ "wit-bindgen",
+]
+
+[[package]]
 name = "agent-support"
 version = "0.1.0"
 dependencies = [

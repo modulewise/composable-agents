@@ -1,0 +1,5 @@
+package composable-agents:agent-interceptor-support@0.1.0;
+
+world agent-interceptor-support {
+    import composable:agents/agent@0.1.0;
+}
