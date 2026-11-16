@@ -311,7 +311,10 @@ interface agent {
   metadata: async func() -> result<agent-metadata, string>;
 
   /// Handle a request as a task. Stream the task's events, then its outcome.
-  invoke: async func(request: agent-request) -> result<agent-invocation, agent-error>;
+  /// The task is canceled when `cancel` resolves, or when the caller drops
+  /// its writer. A caller that stops reading the events does not cancel the
+  /// task.
+  invoke: async func(request: agent-request, cancel: future) -> result<agent-invocation, agent-error>;
 }
 
 world imports {

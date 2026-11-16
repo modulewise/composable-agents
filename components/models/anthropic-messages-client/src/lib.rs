@@ -17,7 +17,7 @@ mod mapping;
 use exports::composable::models::client::GuestSession;
 use model_client_support::types::{
     ModelCall, ModelDelta, ModelError, ModelExchange, ModelInputItem, ModelRequest, ModelResponse,
-    ModelSettings, RequestParameters,
+    ModelSettings, RequestParameters, SessionError,
 };
 use model_client_support::{
     Client, Deltas, Outcome, Session, parsed_config, require_answered_tool_calls,
@@ -102,11 +102,11 @@ impl Client for MessagesClient {
     fn start(
         settings: &ModelSettings,
         history: &[ModelExchange],
-    ) -> Result<MessagesState, ModelError> {
-        require_answered_tool_calls(history)?;
+    ) -> Result<MessagesState, SessionError> {
+        require_answered_tool_calls(history).map_err(SessionError::History)?;
         Ok(MessagesState {
-            messages: mapping::history_to_messages(history)?,
-            api_settings: mapping::ApiSettings::new(settings)?,
+            messages: mapping::history_to_messages(history).map_err(SessionError::History)?,
+            api_settings: mapping::ApiSettings::new(settings).map_err(SessionError::Settings)?,
         })
     }
 
@@ -164,7 +164,7 @@ impl Client for MessagesClient {
 struct SessionState(Session<MessagesClient>);
 
 impl GuestSession for SessionState {
-    fn new(settings: ModelSettings, history: Vec<ModelExchange>) -> Result<Self, ModelError>
+    fn new(settings: ModelSettings, history: Vec<ModelExchange>) -> Result<Self, SessionError>
     where
         Self: Sized,
     {

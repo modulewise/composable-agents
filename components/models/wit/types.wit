@@ -273,6 +273,17 @@ interface types {
         status: option<u32>,
     }
 
+    /// Why a session could not be created, by the input the client could not
+    /// use.
+    variant session-error {
+        /// The conversation's earlier exchanges, from the caller.
+        history(model-error),
+        /// The caller's settings.
+        settings(model-error),
+        /// The client's own config.
+        config(model-error),
+    }
+
     /// A model call: its request and, if the call succeeded, the model's
     /// output. An exchange whose `provider` is `none` was not sent as a call,
     /// and its request is sent with the next call (e.g. the results of tools

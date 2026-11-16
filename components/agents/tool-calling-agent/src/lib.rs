@@ -19,7 +19,7 @@ use std::collections::VecDeque;
 use std::num::NonZeroU32;
 
 use futures::StreamExt;
-use wit_bindgen::rt::async_support::{StreamWriter, spawn_local};
+use wit_bindgen::rt::async_support::{FutureReader, spawn_local};
 
 use agent_support::model_types::{
     ContentDelta, ContentSource, MediaData, ModelDelta, ModelExchange, ModelFinishReason,
@@ -31,9 +31,10 @@ use agent_support::types::{
     AgentResponse, AgentResponseStream, TaskState, TaskStatus,
 };
 use agent_support::{
-    INSTRUCTIONS_CONFIG, INTERNAL_ERROR, INVALID_PARAMS, OCTET_STREAM, ReasoningRun, TaskIds,
-    TextArtifact, agent_message, agent_metadata, get_config, model_input, new_id, parse_config,
-    reasoning_event, reasoning_runs, response_text, send, send_all, status_event,
+    Cancel, Events, INSTRUCTIONS_CONFIG, INTERNAL_ERROR, INVALID_PARAMS, OCTET_STREAM,
+    ReasoningRun, TaskIds, TextArtifact, agent_message, agent_metadata, get_config, model_input,
+    new_id, parse_config, reasoning_event, reasoning_runs, response_text, session_error,
+    status_event,
 };
 use composable::models::client::Session;
 use composable::tools::toolset;
@@ -52,7 +53,10 @@ impl exports::composable::agents::agent::Guest for Component {
         agent_metadata()
     }
 
-    async fn invoke(request: AgentRequest) -> Result<AgentInvocation, AgentError> {
+    async fn invoke(
+        request: AgentRequest,
+        cancel: FutureReader<()>,
+    ) -> Result<AgentInvocation, AgentError> {
         let input = model_input(&request.message.parts);
         if input.is_empty() {
             return Err(AgentError {
@@ -88,11 +92,7 @@ impl exports::composable::agents::agent::Guest for Component {
             seed: None,
             stop_sequences: None,
         };
-        let session = Session::new(&settings, &request.history).map_err(|e| AgentError {
-            code: INVALID_PARAMS,
-            message: format!("invalid history: {}", e.message),
-            data: None,
-        })?;
+        let session = Session::new(&settings, &request.history).map_err(session_error)?;
 
         let ids = TaskIds {
             task_id: request.task_id.unwrap_or_else(new_id),
@@ -116,8 +116,17 @@ impl exports::composable::agents::agent::Guest for Component {
                 result: outcome_rx,
             },
         };
+        let cancel = Cancel::new(cancel);
         spawn_local(async move {
-            let outcome = run(session, input, &ids, &options, events_tx).await;
+            let outcome = run(
+                session,
+                input,
+                &ids,
+                &options,
+                Events::new(events_tx),
+                &cancel,
+            )
+            .await;
             let _ = outcome_tx.write(Ok(outcome)).await;
         });
         Ok(invocation)
@@ -152,13 +161,15 @@ impl Options {
 
 // Calls the model in a loop and runs the tools each response requests,
 // streaming a `working` status before each call, reasoning as status messages
-// and all text as one artifact. A dropped event stream cancels the task.
+// and all text as one artifact. A cancel stops the model call or tool call
+// that is running.
 async fn run(
     session: Session,
     input: Vec<ModelInputItem>,
     ids: &TaskIds,
     options: &Options,
-    mut events: StreamWriter<AgentEvent>,
+    mut events: Events,
+    cancel: &Cancel,
 ) -> AgentResponse {
     let mut task = Task {
         session,
@@ -167,7 +178,10 @@ async fn run(
         pending_calls: VecDeque::new(),
         results: Vec::new(),
     };
-    if !send(&mut events, status_event(ids, TaskState::Working, None)).await {
+    events
+        .send(status_event(ids, TaskState::Working, None))
+        .await;
+    if cancel.is_canceled() {
         return task.end(TaskState::Canceled, None, None);
     }
 
@@ -195,7 +209,12 @@ async fn run(
         let mut reasoning = ReasoningRun::default();
         let mut streamed_text = false;
         let mut deltas = stream.deltas.into_stream();
-        while let Some(delta) = deltas.next().await {
+        let canceled = loop {
+            let delta = match cancel.until_canceled(deltas.next()).await {
+                None => break true,
+                Some(None) => break false,
+                Some(Some(delta)) => delta,
+            };
             // A run of reasoning ends at the next content delta of another
             // kind.
             let ready: Vec<AgentEvent> = match delta {
@@ -217,19 +236,19 @@ async fn run(
                 // The session records the counts in the call's exchange.
                 ModelDelta::Usage(_) => Vec::new(),
             };
-            if !send_all(&mut events, ready).await {
-                drop(deltas);
-                // The call's exchange is complete once its result resolves.
-                let _ = stream.result.await;
-                return task.end(TaskState::Canceled, None, None);
-            }
-        }
-        // A run of reasoning also ends with the stream.
-        if !send_all(&mut events, reasoning.finish(ids).into_iter().collect()).await {
-            // The call's exchange is complete once its result resolves.
+            events.send_all(ready).await;
+        };
+        if canceled {
+            // Dropping the deltas stops the model call. Its exchange is
+            // complete once its result resolves.
+            drop(deltas);
             let _ = stream.result.await;
             return task.end(TaskState::Canceled, None, None);
         }
+        // A run of reasoning also ends with the stream.
+        events
+            .send_all(reasoning.finish(ids).into_iter().collect())
+            .await;
 
         let response = match stream.result.await {
             Ok(response) => response,
@@ -248,17 +267,14 @@ async fn run(
                 .into_iter()
                 .map(|text| reasoning_event(ids, text))
                 .collect();
-            if !send_all(&mut events, runs).await {
-                return task.end(TaskState::Canceled, None, None);
-            }
+            events.send_all(runs).await;
         }
         // A response that streamed no text deltas sends its whole text as one
         // chunk.
         if !streamed_text
             && let Some(event) = task.artifact.push(response_text(&response.output), ids)
-            && !send(&mut events, event).await
         {
-            return task.end(TaskState::Canceled, None, None);
+            events.send(event).await;
         }
 
         match response.finish_reason {
@@ -278,13 +294,18 @@ async fn run(
             }
         }
         while let Some(call) = task.pending_calls.pop_front() {
-            if options.report_tool_calls
-                && !send(&mut events, tool_call_event(ids, &call.name)).await
-            {
-                task.pending_calls.push_front(call);
-                return task.end(TaskState::Canceled, None, None);
+            if options.report_tool_calls {
+                events.send(tool_call_event(ids, &call.name)).await;
             }
-            task.results.push(call_tool(&call).await);
+            // A canceled tool call goes back with the calls that did not run,
+            // which the closing exchange answers.
+            match cancel.until_canceled(call_tool(&call)).await {
+                Some(result) => task.results.push(result),
+                None => {
+                    task.pending_calls.push_front(call);
+                    return task.end(TaskState::Canceled, None, None);
+                }
+            }
         }
         // At the turn limit, the results go in the closing exchange instead of
         // another model call.
@@ -295,7 +316,10 @@ async fn run(
                 .finish(&mut events, TaskState::Failed, reason, Some(message))
                 .await;
         }
-        if !send(&mut events, status_event(ids, TaskState::Working, None)).await {
+        events
+            .send(status_event(ids, TaskState::Working, None))
+            .await;
+        if cancel.is_canceled() {
             return task.end(TaskState::Canceled, None, None);
         }
         input = std::mem::take(&mut task.results);
@@ -315,23 +339,17 @@ struct Task<'a> {
 }
 
 impl Task<'_> {
-    // Ends the task, sending the artifact's held chunk as its last. A task
-    // that would complete is canceled if the caller stopped reading.
+    // Ends the task, sending the artifact's held chunk as its last.
     async fn finish(
         mut self,
-        events: &mut StreamWriter<AgentEvent>,
+        events: &mut Events,
         state: TaskState,
         finish_reason: Option<AgentFinishReason>,
         message: Option<String>,
     ) -> AgentResponse {
-        let delivered = match self.artifact.finish(self.ids) {
-            Some(event) => send(events, event).await,
-            None => true,
-        };
-        let state = match state {
-            TaskState::Completed if !delivered => TaskState::Canceled,
-            state => state,
-        };
+        if let Some(event) = self.artifact.finish(self.ids) {
+            events.send(event).await;
+        }
         self.end(state, finish_reason, message)
     }
 

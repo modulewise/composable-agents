@@ -1,0 +1,333 @@
+package composable:agents@0.1.0;
+
+/// Types for the `agent` interface.
+interface types {
+  use composable:models/types@0.1.0.{model-exchange, model-finish-reason};
+
+  /// A JSON value, as text.
+  type json = string;
+
+  /// The sender of a message.
+  enum role {
+    /// Not set, or not recognized.
+    unspecified,
+    /// From the caller to the agent.
+    user,
+    /// From the agent to its caller.
+    agent,
+  }
+
+  /// One section of content: text, file bytes, a file URL, or structured
+  /// data as JSON.
+  variant part-content {
+    text(string),
+    /// Base64-encoded file bytes.
+    raw(string),
+    /// URL pointing to the file content.
+    url(string),
+    /// Arbitrary structured data.
+    data(json),
+  }
+
+  record part {
+    content: part-content,
+    /// Part metadata.
+    metadata: option<json>,
+    /// Optional filename for file parts (e.g. "document.pdf").
+    filename: option<string>,
+    /// MIME type of the content (e.g. "image/png").
+    media-type: option<string>,
+  }
+
+  /// One unit of communication between a caller and an agent.
+  record message {
+    /// Unique id of the message, created by the sender (e.g. a UUID).
+    message-id: string,
+    /// Context this message belongs to, if any.
+    context-id: option<string>,
+    /// Task this message belongs to, if any.
+    task-id: option<string>,
+    role: role,
+    /// The message's content (at least one part).
+    parts: list<part>,
+    /// Message metadata.
+    metadata: option<json>,
+    /// URIs of extensions present on this message.
+    extensions: list<string>,
+    /// Task ids this message references for additional context.
+    reference-task-ids: list<string>,
+  }
+
+  /// Lifecycle states of a task.
+  enum task-state {
+    /// Unknown or indeterminate.
+    unspecified,
+    /// Submitted and acknowledged.
+    submitted,
+    /// Actively being processed.
+    working,
+    /// Finished successfully (terminal).
+    completed,
+    /// Finished with an error (terminal).
+    failed,
+    /// Canceled before completion (terminal).
+    canceled,
+    /// Requires additional user input to proceed (interrupted).
+    input-required,
+    /// The agent declined the task (terminal).
+    rejected,
+    /// Authentication required to proceed (interrupted).
+    auth-required,
+  }
+
+  record task-status {
+    state: task-state,
+    /// Optional message associated with the status.
+    message: option<message>,
+    /// When the status was recorded: an ISO 8601 timestamp in UTC.
+    timestamp: option<string>,
+  }
+
+  record artifact {
+    /// Unique id of the artifact within its task.
+    artifact-id: string,
+    name: option<string>,
+    description: option<string>,
+    /// Content of the artifact (at least one part).
+    parts: list<part>,
+    /// Artifact metadata.
+    metadata: option<json>,
+    /// URIs of extensions present on this artifact.
+    extensions: list<string>,
+  }
+
+  record task {
+    /// Unique id of the task.
+    id: string,
+    /// Context grouping related tasks and messages.
+    context-id: option<string>,
+    status: task-status,
+    artifacts: list<artifact>,
+    /// History of interactions for this task.
+    history: list<message>,
+    /// Task metadata.
+    metadata: option<json>,
+  }
+
+  /// The service provider of the agent: A2A's `AgentProvider`.
+  record agent-provider {
+    /// A URL for the provider's website or relevant documentation.
+    url: string,
+    /// The name of the provider's organization.
+    organization: string,
+  }
+
+  /// An extension the agent supports: A2A's `AgentExtension`.
+  record agent-extension {
+    /// The unique URI identifying the extension.
+    uri: option<string>,
+    /// How this agent uses the extension.
+    description: option<string>,
+    /// If true, the client must understand and comply with the extension's
+    /// requirements.
+    required: option<bool>,
+    /// Extension-specific configuration parameters.
+    params: option<json>,
+  }
+
+  /// A security requirement: A2A's `SecurityRequirement`, with each security
+  /// scheme's name as key and its required scopes as value.
+  record security-requirement {
+    schemes: list<tuple<string, list<string>>>,
+  }
+
+  /// A capability the agent offers its callers, as listed on its A2A card:
+  /// A2A's `AgentSkill`. Not an Agent Skill (`SKILL.md`), which is
+  /// instructions in an agent's own context.
+  record agent-skill {
+    id: string,
+    name: string,
+    description: string,
+    /// At least one tag.
+    tags: list<string>,
+    examples: list<string>,
+    /// Input media types for this skill, overriding the agent's defaults.
+    input-modes: list<string>,
+    /// Output media types for this skill, overriding the agent's defaults.
+    output-modes: list<string>,
+    /// Security requirements specific to this skill.
+    security-requirements: list<security-requirement>,
+  }
+
+  /// Information the agent reports about itself, used in an A2A `AgentCard`.
+  /// The server adds `supported_interfaces`, the rest of `capabilities`,
+  /// `security_schemes`, `security_requirements` and `signatures`.
+  record agent-metadata {
+    name: string,
+    description: string,
+    provider: option<agent-provider>,
+    version: string,
+    /// A URL providing additional documentation about the agent.
+    documentation-url: option<string>,
+    /// Default input media types (at least one).
+    default-input-modes: list<string>,
+    /// Default output media types (at least one).
+    default-output-modes: list<string>,
+    /// The agent's skills (at least one).
+    skills: list<agent-skill>,
+    /// A URL to an icon for the agent.
+    icon-url: option<string>,
+    /// The extensions the agent supports, for the card's
+    /// `capabilities.extensions`. Empty when it supports none.
+    extensions: list<agent-extension>,
+  }
+
+  /// One message for the agent to handle as a task.
+  record agent-request {
+    /// The incoming message.
+    message: message,
+    /// The task this message starts or continues, or `none` for a new
+    /// task, in which case the agent generates an id.
+    task-id: option<string>,
+    /// The context the task belongs to, or `none` for a new context, in
+    /// which case the agent generates an id.
+    context-id: option<string>,
+    /// The media types the caller accepts for response parts (A2A's
+    /// `accepted_output_modes`). Empty when the caller gave none.
+    accepted-output-modes: list<string>,
+    /// The extension URIs the caller wants to use for the request (A2A's
+    /// `A2A-Extensions` service parameter).
+    requested-extensions: list<string>,
+    /// The request's metadata (A2A's `SendMessageRequest.metadata`).
+    metadata: option<json>,
+    /// The status of the task this message continues (`input-required` or
+    /// `auth-required`, with the agent's status message), or `none` when
+    /// the message starts a new task and thus has no status yet.
+    task-status: option<task-status>,
+    /// The tasks the message names in `reference-task-ids`.
+    related-tasks: list<task>,
+    /// The conversation's earlier model exchanges, oldest first. Empty for
+    /// a caller that does not maintain history.
+    history: list<model-exchange>,
+  }
+
+  /// A2A's `TaskStatusUpdateEvent`.
+  record task-status-update-event {
+    task-id: string,
+    context-id: string,
+    status: task-status,
+    /// Event metadata.
+    metadata: option<json>,
+  }
+
+  /// A2A's `TaskArtifactUpdateEvent`.
+  record task-artifact-update-event {
+    task-id: string,
+    context-id: string,
+    artifact: artifact,
+    /// Adds to an artifact already sent with the same id.
+    append: option<bool>,
+    /// The artifact's last chunk.
+    last-chunk: option<bool>,
+    /// Event metadata.
+    metadata: option<json>,
+  }
+
+  /// An update to the task.
+  variant agent-event {
+    /// The task's status changed, with progress or a message for the
+    /// caller. A `working` status message whose part has
+    /// `{"reasoning": true}` in its metadata is the model's reasoning.
+    status(task-status-update-event),
+    /// Content for an artifact.
+    artifact(task-artifact-update-event),
+  }
+
+  /// Why an invocation ended, beside the task's state.
+  variant agent-finish-reason {
+    /// The model's last call ended for this reason.
+    model(model-finish-reason),
+    /// The agent reached its limit on model calls.
+    max-turns,
+  }
+
+  /// The task's outcome.
+  record agent-response {
+    /// The task's final status: a terminal state (`failed` and `canceled`
+    /// included), or `input-required` or `auth-required`.
+    status: task-status,
+    /// The task's artifacts, assembled.
+    artifacts: list<artifact>,
+    /// The model exchanges this invocation made, oldest first, for the
+    /// caller to add to the conversation's history.
+    exchanges: list<model-exchange>,
+    /// Why the invocation ended, or `none` when the task's state is
+    /// sufficient (e.g. `canceled`).
+    finish-reason: option<agent-finish-reason>,
+  }
+
+  /// A failure to handle a request as a task, distinct from a task that did
+  /// run but failed. Follows A2A's error model: a code, a message, and
+  /// optional details.
+  record agent-error {
+    /// A JSON-RPC error code, either standard (e.g. -32602 invalid params,
+    /// -32603 internal error) or A2A (-32001 to -32099, e.g. -32005
+    /// content type not supported).
+    code: s32,
+    message: string,
+    /// A2A's error details: an array of objects, each with an `@type` key.
+    data: option<json>,
+  }
+
+  /// The task's events stream as they occur, and the future resolves to the
+  /// `agent-response` when the stream ends.
+  record agent-response-stream {
+    events: stream<agent-event>,
+    %result: future<result<agent-response, agent-error>>,
+  }
+
+  /// The task an `invoke` started, with its ids, the extensions the agent
+  /// activated, and its response.
+  record agent-invocation {
+    /// The task id, either from the request or generated by the agent.
+    task-id: string,
+    /// The context id, either from the request or generated by the agent.
+    context-id: string,
+    /// The extensions from `requested-extensions` that the agent activated
+    /// to handle this request, for the response's `A2A-Extensions`.
+    activated-extensions: list<string>,
+    response: agent-response-stream,
+  }
+}
+
+/// Agent Interface
+///
+/// An agent handles one request at a time as a task, delegating to a model.
+/// Depending on the agent, it may also call tools and/or other agents.
+interface agent {
+  use types.{agent-metadata, agent-request, agent-invocation, agent-error};
+
+  /// Information about the agent, which may contribute to an A2A agent card.
+  metadata: async func() -> result<agent-metadata, string>;
+
+  /// Handle a request as a task. Stream the task's events, then its outcome.
+  /// The task is canceled when `cancel` resolves, or when the caller drops
+  /// its writer. A caller that stops reading the events does not cancel the
+  /// task.
+  invoke: async func(request: agent-request, cancel: future) -> result<agent-invocation, agent-error>;
+}
+
+world imports {
+  import composable:models/types@0.1.0;
+  import types;
+  import agent;
+}
+/// An agent that delegates to a model. An agent component may include this
+/// world in its own, along with anything else it imports.
+world base-agent {
+  import composable:models/types@0.1.0;
+  import composable:models/client@0.1.0;
+  import types;
+
+  export agent;
+}

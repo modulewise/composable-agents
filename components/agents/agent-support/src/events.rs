@@ -26,19 +26,32 @@ pub fn status_event(ids: &TaskIds, state: TaskState, message: Option<Message>) -
     })
 }
 
-/// Sends an event, returning whether the caller still reads the stream.
-pub async fn send(events: &mut StreamWriter<AgentEvent>, event: AgentEvent) -> bool {
-    events.write_one(event).await.is_none()
+/// The task's events. Once the caller stops reading, they're dropped.
+pub struct Events {
+    writer: Option<StreamWriter<AgentEvent>>,
 }
 
-/// Sends events in order, returning whether the caller still reads the stream.
-pub async fn send_all(events: &mut StreamWriter<AgentEvent>, ready: Vec<AgentEvent>) -> bool {
-    for event in ready {
-        if !send(events, event).await {
-            return false;
+impl Events {
+    pub fn new(writer: StreamWriter<AgentEvent>) -> Self {
+        Events {
+            writer: Some(writer),
         }
     }
-    true
+
+    pub async fn send(&mut self, event: AgentEvent) {
+        if let Some(writer) = &mut self.writer
+            && writer.write_one(event).await.is_some()
+        {
+            self.writer = None;
+        }
+    }
+
+    /// Sends the events in order.
+    pub async fn send_all(&mut self, events: Vec<AgentEvent>) {
+        for event in events {
+            self.send(event).await;
+        }
+    }
 }
 
 /// A message from the agent with one text part.

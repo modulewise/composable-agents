@@ -1,0 +1,4 @@
+[overrides]
+"composable:agents" = { path = "../wit" }
+"composable:models" = { path = "../../models/wit" }
+"wasi:otel" = { path = "wit/overrides/wasi-otel" }

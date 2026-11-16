@@ -1,8 +1,13 @@
-# A second agent, traced-assistant, which is the same as assistant except that
-# it imports traced-model, an interceptor that wraps model and emits a span for
-# each model call.
+# The assistant agent from agent.toml, traced, for run.sh --otel to load in
+# its place. The traced-assistant wraps assistant and emits a span for each
+# invocation. The assistant imports traced-model, which wraps model and emits a
+# span for each model call, as a child of the invocation's span.
 
-[agent.traced-assistant]
+[component.traced-assistant]
+uri = "oci://localhost:5001/composable-agents/agent-otel-interceptor:latest"
+imports = ["assistant", "otel", "clocks", "random"]
+
+[agent.assistant]
 model = "traced-model"
 toolset = "tools"
 description = "Answers arithmetic questions with calculator tools"

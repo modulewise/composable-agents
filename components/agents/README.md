@@ -22,11 +22,13 @@ An agent handles each `invoke` as a task:
 
 - **`metadata()`** describes the agent (name, skills, input and output modes),
   which may contribute to an A2A agent card.
-- **`invoke(request)`** takes one message, with the conversation's earlier
-  model exchanges as `history`, and returns an `agent-invocation` with the
-  task's ids, the extensions the agent activated, and the response. The
+- **`invoke(request, cancel)`** takes one message, with the conversation's
+  earlier model exchanges as `history`, and returns an `agent-invocation` with
+  the task's ids, the extensions the agent activated, and the response. The
   response is the task's events as they occur (status updates and artifact
-  chunks), with a future of the final `agent-response`.
+  chunks), with a future of the final `agent-response`. The task is canceled
+  when `cancel` resolves, or when the caller drops its writer. A caller that
+  stops reading the events does not cancel the task.
 
 The response carries the task's final status, its assembled artifacts, the
 model exchanges the invocation made (with each call's token counts, for the
@@ -44,9 +46,10 @@ video, or document input by media type, which the client may refuse.
 The task streams a `working` status, then the model's text as the chunks of one
 artifact, with the last chunk marked. Each run of the model's reasoning, when
 the client returns it, is sent as one `working` status message whose part has
-`{"reasoning": true}` in its metadata. Dropping the event stream cancels the
-task and its model call. If the call fails, the task fails with the error as
-its status message, and any text already streamed remains as its artifact.
+`{"reasoning": true}` in its metadata. A cancel stops the model call, and the
+task ends `canceled` with the call's exchange. If the call fails, the task
+fails with the error as its status message, and any text already streamed
+remains as its artifact.
 
 | Key | |
 |---|---|
@@ -68,8 +71,10 @@ fails with the finish reason `max-turns`, so the next invocation starts with
 their results.
 
 The task streams a `working` status before each model call, and reasoning and
-text as in chat-agent, with the text of every call in one artifact. Dropping
-the event stream cancels the task at its next event.
+text as in chat-agent, with the text of every call in one artifact. A cancel
+stops the model call or tool call that is running, and the task ends
+`canceled`, with its exchanges and a closing exchange that answers the tool
+calls that didn't run.
 
 A tool's text, images, audio, resource links, and embedded blobs pass to the
 model client, which replaces any it can't send with a note. A tool call that
@@ -86,3 +91,48 @@ tool that didn't run, so every tool call in the history is answered.
 | `instructions` | optional: the model's instructions (`model-settings.instructions`) |
 | `max-turns` | default: 8; the most model calls allowed per invocation |
 | `report-tool-calls` | default: `false`; whether to emit called tool names in status messages |
+
+## Interceptors
+
+An interceptor exports `agent` and also imports it, wrapping another agent.
+`agent-interceptor-support` provides `invoke` and `metadata` functions that
+relay each task's response, so an interceptor implements one constructor and
+any callbacks it needs:
+
+- `AgentInterceptor`: `new_invocation` (creates an invocation's interceptor,
+  and may change the request, or return an error, in which case no task
+  starts), plus the `on_metadata` callback.
+- `InvocationInterceptor`: the `on_invocation` (sees the `agent-invocation`),
+  `on_event` (may change an event, and returns an `Action`), `on_result`
+  (returns the outcome the caller receives) and `on_error` (sees the error the
+  agent returned instead of starting a task) callbacks.
+
+Each callback has a no-op default. `on_event` returning
+`Action::Reject(message)` rejects the task. The event isn't relayed, the
+caller's events end, the wrapped agent's task is canceled, and the outcome is
+the agent's response with the `rejected` state and that status message.
+`agent_message` builds that message from the event's task and context ids,
+with a message id provided by the interceptor.
+
+The wrapped agent gets its own cancel future, which `invoke` resolves when the
+caller's resolves or the task is rejected. Once the caller stops reading the
+events, `on_event` still sees each one, which is then dropped. An
+`AgentInterceptor` also creates each task's stream and futures from its own
+bindings, as an agent does.
+
+## agent-otel-interceptor
+
+Emits an `invoke_agent {name}` internal span for each invocation, as a child of
+the current span, following the OpenTelemetry GenAI semantic conventions. The
+span is open while the agent runs, so the `chat` spans of its model calls are
+its children. It records the agent's name, description, and version (from its
+`metadata`), the conversation id (the invocation's `context-id`), the output
+type when the request accepts exactly one output mode that has a type, the
+finish reason, and the input and output tokens summed over the invocation's
+model calls. A task that ends `failed` or `rejected`, or an error from the
+agent, has an `Error` status and an `error.type` (`_OTHER`, `rejected`, or the
+error's code), and a `gen_ai.invoke_agent.exception` log record.
+
+It imports the system clock, random, and patched `wasi:otel` (`0.2.0-rc.2+p3`)
+WIT for tracing, logs, and types. Those are provided by the composable-runtime
+`wasi:clocks`, `wasi:random`, and `otel` capabilities.

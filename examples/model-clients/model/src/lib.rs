@@ -9,7 +9,9 @@ wit_bindgen::generate!({
 });
 
 use composable::models::client::Session;
-use composable::models::types::{ModelInputItem, ModelOutputItem, ModelRequest, ModelSettings};
+use composable::models::types::{
+    ModelInputItem, ModelOutputItem, ModelRequest, ModelSettings, SessionError,
+};
 
 struct Model;
 
@@ -27,7 +29,11 @@ impl Guest for Model {
             seed: None,
             stop_sequences: None,
         };
-        let session = Session::new(&settings, &[]).map_err(|e| e.message)?;
+        let session = Session::new(&settings, &[]).map_err(|e| match e {
+            SessionError::History(e) | SessionError::Settings(e) | SessionError::Config(e) => {
+                e.message
+            }
+        })?;
         let request = ModelRequest {
             input: vec![ModelInputItem::Text(prompt)],
             max_tokens: None,

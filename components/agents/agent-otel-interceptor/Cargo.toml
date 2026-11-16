@@ -1,0 +1,12 @@
+[package]
+name = "agent-otel-interceptor"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+agent-interceptor-support = { path = "../agent-interceptor-support" }
+serde_json = { workspace = true }
+wit-bindgen = { workspace = true, features = ["async-spawn"] }

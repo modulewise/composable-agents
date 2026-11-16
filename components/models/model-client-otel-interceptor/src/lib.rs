@@ -15,7 +15,7 @@ wit_bindgen::generate!({
 use exports::composable::models::client::{Guest, GuestSession};
 use model_client_interceptor_support::types::{
     ContentDelta, ModelCall, ModelDelta, ModelError, ModelExchange, ModelFinishReason,
-    ModelRequest, ModelResponse, ModelSettings, TokenUsage,
+    ModelRequest, ModelResponse, ModelSettings, SessionError, TokenUsage,
 };
 use model_client_interceptor_support::{
     CallInterceptor, Ending, Flow, Outcome, Session, SessionInterceptor,
@@ -38,7 +38,7 @@ impl SessionInterceptor for Otel {
     fn new(
         _settings: &mut ModelSettings,
         _history: &mut Vec<ModelExchange>,
-    ) -> Result<Self, ModelError> {
+    ) -> Result<Self, SessionError> {
         Ok(Otel)
     }
 
@@ -341,7 +341,7 @@ fn is_empty_context(context: &tracing::SpanContext) -> bool {
 struct TracedSession(Session<Otel>);
 
 impl GuestSession for TracedSession {
-    fn new(settings: ModelSettings, history: Vec<ModelExchange>) -> Result<Self, ModelError> {
+    fn new(settings: ModelSettings, history: Vec<ModelExchange>) -> Result<Self, SessionError> {
         Session::new(settings, history).map(TracedSession)
     }
 

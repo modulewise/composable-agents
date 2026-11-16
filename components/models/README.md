@@ -16,8 +16,10 @@ Agents ([`composable:agents`](../agents)) call a model through `client`.
 A `session` serves one agent invocation:
 
 - **`constructor(settings, history)`** takes the caller's `model-settings` and
-  the conversation's earlier exchanges, and fails on history or settings it
-  cannot send, or a `base-url` that is not a valid URL or has no host or port.
+  the conversation's earlier exchanges. It fails with a `session-error` that
+  names the input the client couldn't use, `history` or `settings` from the
+  caller, or `config` of its own, such as a `base-url` that is not a valid URL
+  or has no host or port.
 - **`call(request)`** makes one model call and returns a `model-call` with the
   requested model, the provider, the API, the server it's sent to, the
   parameters sent, and the response as it arrives. The response is a stream of
