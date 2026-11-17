@@ -81,17 +81,14 @@ pub trait InvocationInterceptor: Sized + 'static {
     /// Called with the invocation the agent started.
     fn on_invocation(&mut self, _invocation: &AgentInvocation) {}
 
-    /// Called before the caller receives each event. May change the event, and
-    /// returns what action to take.
-    fn on_event(&mut self, _event: &mut AgentEvent) -> Action {
+    /// Called before the caller receives each event and returns what action to
+    /// take.
+    fn on_event(&mut self, _event: &AgentEvent) -> Action {
         Action::Continue
     }
 
-    /// Called once with the task's outcome, and returns the outcome the caller
-    /// receives.
-    fn on_result(self, outcome: Outcome) -> Outcome {
-        outcome
-    }
+    /// Called once with the task's outcome, which the caller then receives.
+    fn on_result(self, _outcome: &Outcome) {}
 
     /// Called with the error the agent returned instead of starting a task,
     /// and returns the error the caller receives.
@@ -196,7 +193,8 @@ fn relay<I: AgentInterceptor>(
             }
             (result, _) => result,
         };
-        let _ = caller_outcome.write(interceptor.on_result(result)).await;
+        interceptor.on_result(&result);
+        let _ = caller_outcome.write(result).await;
     });
     AgentResponseStream {
         events,
@@ -236,10 +234,10 @@ async fn forward<C: InvocationInterceptor>(
             })
             .await
         };
-        let Some(mut event) = next else {
+        let Some(event) = next else {
             return (interceptor, None);
         };
-        if let Action::Reject(message) = interceptor.on_event(&mut event) {
+        if let Action::Reject(message) = interceptor.on_event(&event) {
             drop(target_cancel);
             return (interceptor, Some(message));
         }

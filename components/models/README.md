@@ -27,9 +27,10 @@ A `session` serves one agent invocation:
   `model-response`. A request's `max-tokens` limits the call, taking precedence
   over the session's, then the config's, then the client's default. `call`
   fails, with nothing sent or recorded, when no client receives the call (e.g.
-  an interceptor refuses it). The response is an error only on input the
-  client cannot send, also with nothing sent or recorded. A failure sending the
-  request or reading the response resolves the future.
+  an interceptor refuses it). The response is an error, also with nothing sent
+  or recorded, on input the client cannot send, or when the session's previous
+  call's future has not resolved, since a session's calls are sequential. A
+  failure sending the request or reading the response resolves the future.
 - **`exchanges()`** returns the calls made within the session (each request
   with its output, provider, models, and token counts), for the caller to add
   to the conversation's history. A call's exchange is complete once the call's
@@ -122,29 +123,45 @@ An interceptor exports `client` and imports it, wrapping another client.
 response, so an interceptor implements two constructors and any callbacks it
 needs:
 
-- `SessionInterceptor`: `new` (creates the session's interceptor, and may
-  change the settings or history, or fail the session) and `new_call`
+- `SessionInterceptor`: `new` (creates the session's interceptor, sees the
+  history, and may change the settings, or fail the session) and `new_call`
   (creates a call's interceptor, and may change the request, or refuse the
-  call), plus the `on_exchanges` callback.
-- `CallInterceptor`: the `on_describe` (sees the `model-call`), `on_delta`
-  (may change a delta, or stop the call) and `on_end` (returns the outcome the
-  caller gets) callbacks.
+  call).
+- `CallInterceptor`: callbacks include `on_call` (sees the `model-call`),
+  `on_delta` (sees each delta, and returns an `Action`), `on_result` (sees the
+  outcome the caller receives, and whether the caller canceled the call), and
+  `on_error` (sees the error the call returned instead of a response, and
+  returns the error the caller receives).
 
-Each callback has a default that changes nothing. A `SessionInterceptor` also
-creates each call's stream and future from its own bindings, as a client
-does.
+Each callback has a default that changes nothing. The callbacks after the
+client gets the call see its output but can't change it, since the client
+keeps that output in its own state for the session's next call. `on_delta`
+returning `Action::Reject(reason)` blocks the call's output, as a provider's
+content filter does. The delta isn't relayed, the caller's deltas end, the
+client's call is canceled, and the outcome is a response with no output, the
+`blocked(reason)` finish reason (e.g. `content_filter`), and the counts from
+the last usage delta. A refusal in `new_call` is an error instead, and nothing
+is sent. A `SessionInterceptor` also creates each call's stream and future
+from its own bindings, as a client does.
 
 ## model-client-otel-interceptor
 
-Emits a `chat {model}` client span for each call a client receives, as a child
-of the host's span, following the OpenTelemetry GenAI semantic conventions. It
-records the requested model, provider, server and parameters sent, the
-response's model, id, finish reason and token counts, and the time to the
-first chunk. A failed call's span has an `Error` status and an `error.type`
-(the provider's error code, else the status code, else `_OTHER`), and a
+Emits a `chat {model}` client span for each call, as a child of the host's
+span, following the OpenTelemetry GenAI semantic conventions. It records the
+requested model, provider, server and parameters sent, the response's model,
+id, finish reason and token counts, and the time to the first chunk. A failed
+call's span has an `Error` status and an `error.type` (the provider's error
+code, else the status code, else `_OTHER`), and a
 `gen_ai.client.inference.exception` log record. A call the caller canceled
-isn't a failure, so its status stays unset, with the finish reason `error` and
-`gen_ai.response.status` set to `cancelled`.
+isn't a failure, so its status stays unset, with the finish reason `error`. A
+`blocked` response, from the provider or an interceptor's `Reject`, is a
+response, so its status also stays unset, with its finish reason. A call
+dropped before it ends is recorded as canceled.
+
+A call that no client received (e.g. an interceptor below refused it, or a
+router found no route) fails before a provider or model is chosen. Its span is
+named `chat`, and has no `gen_ai.provider.name` or `gen_ai.request.model`,
+although the conventions describe the provider as being required.
 
 It imports a patched version of `wasi:otel` tracing, logs, and types
 (`0.2.0-rc.2+p3`), the system clock, and random, which composable-runtime's

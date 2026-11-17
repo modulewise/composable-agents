@@ -324,7 +324,8 @@ interface client {
     /// `model-delta` items followed by a final `model-response`. Fails,
     /// with nothing sent or recorded, when no client receives the call
     /// (e.g. an interceptor refuses it). The call's response is an error,
-    /// with nothing sent or recorded, on input the client cannot send. A
+    /// with nothing sent or recorded, on input the client cannot send, or
+    /// when the session's previous call's `result` has not resolved. A
     /// failure sending the request or reading the response resolves the
     /// stream's `result`.
     call: async func(request: model-request) -> result<model-call, model-error>;

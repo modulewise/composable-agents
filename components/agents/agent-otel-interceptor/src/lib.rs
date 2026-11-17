@@ -71,12 +71,11 @@ impl InvocationInterceptor for InvokeSpan {
         self.add("gen_ai.conversation.id", invocation.context_id.as_str());
     }
 
-    fn on_result(self, outcome: Outcome) -> Outcome {
-        match &outcome {
+    fn on_result(self, outcome: &Outcome) {
+        match outcome {
             Ok(response) => self.end_with_response(response),
             Err(error) => self.end_with_error(error),
         }
-        outcome
     }
 
     fn on_error(self, error: AgentError) -> AgentError {

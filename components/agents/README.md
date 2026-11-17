@@ -102,17 +102,20 @@ any callbacks it needs:
 - `AgentInterceptor`: `new_invocation` (creates an invocation's interceptor,
   and may change the request, or return an error, in which case no task
   starts), plus the `on_metadata` callback.
-- `InvocationInterceptor`: the `on_invocation` (sees the `agent-invocation`),
-  `on_event` (may change an event, and returns an `Action`), `on_result`
-  (returns the outcome the caller receives) and `on_error` (sees the error the
-  agent returned instead of starting a task) callbacks.
+- `InvocationInterceptor`: callbacks include `on_invocation` (sees the
+  `agent-invocation`), `on_event` (sees each event, and returns an `Action`),
+  `on_result` (sees the outcome the caller receives) and `on_error` (sees the
+  error the agent returned instead of starting a task, and returns the error
+  the caller receives).
 
-Each callback has a no-op default. `on_event` returning
-`Action::Reject(message)` rejects the task. The event isn't relayed, the
-caller's events end, the wrapped agent's task is canceled, and the outcome is
-the agent's response with the `rejected` state and that status message.
-`agent_message` builds that message from the event's task and context ids,
-with a message id provided by the interceptor.
+Each callback has a no-op default. The callbacks after the agent gets the
+request see its events and outcome but can't change them, since the agent
+assembles its response's artifacts and exchanges from its own copies.
+`on_event` returning `Action::Reject(message)` rejects the task. The event
+isn't relayed, the caller's events end, the wrapped agent's task is canceled,
+and the outcome is the agent's response with the `rejected` state and that
+status message. `agent_message` builds that message from the event's task and
+context ids, with a message id provided by the interceptor.
 
 The wrapped agent gets its own cancel future, which `invoke` resolves when the
 caller's resolves or the task is rejected. Once the caller stops reading the
