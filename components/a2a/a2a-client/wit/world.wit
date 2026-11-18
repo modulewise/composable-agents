@@ -1,0 +1,8 @@
+package composable-agents:a2a-client@0.1.0;
+
+/// An A2A client that calls agents over JSON-RPC.
+world a2a-client {
+    import componentized:http/client@0.1.0;
+
+    export composable:a2a/client@0.1.0;
+}

@@ -1,0 +1,139 @@
+/// A2A Client Interface. Calls an agent that an A2A server hosts.
+
+interface client {
+    use composable:agents/types@0.1.0.{json, message, task, task-state};
+    use types.{agent-card, agent-interface, stream-response};
+
+    /// A2A's `SendMessageRequest`, without `tenant`, which is the selected
+    /// interface's.
+    record send-message-request {
+        message: message,
+        configuration: option<send-message-configuration>,
+        metadata: option<json>,
+    }
+
+    /// A2A's `SendMessageConfiguration`, without
+    /// `task-push-notification-config`.
+    record send-message-configuration {
+        /// The media types the client accepts for response parts.
+        accepted-output-modes: list<string>,
+        /// The most recent messages of the task's history to include, or
+        /// `none` for no limit.
+        history-length: option<u32>,
+        /// Whether `send-message` returns as soon as the task is created,
+        /// instead of waiting for a terminal or interrupted state. It has no
+        /// effect on `send-streaming-message`.
+        return-immediately: bool,
+    }
+
+    /// A2A's `SendMessageResponse`.
+    variant send-message-response {
+        task(task),
+        message(message),
+    }
+
+    /// What `send-streaming-message` returns.
+    record message-response-stream {
+        /// A task followed by its status and artifact updates until it reaches
+        /// a terminal or interrupted state, or one message.
+        responses: stream<stream-response>,
+        /// Resolves when the responses end, with an error if the stream
+        /// failed.
+        %result: future<result<_, error>>,
+    }
+
+    /// A2A's `GetTaskRequest`, without `tenant`.
+    record get-task-request {
+        id: string,
+        /// The most recent messages of the task's history to include, or
+        /// `none` for no limit.
+        history-length: option<u32>,
+    }
+
+    /// A2A's `CancelTaskRequest`, without `tenant`.
+    record cancel-task-request {
+        id: string,
+        metadata: option<json>,
+    }
+
+    /// A2A's `ListTasksRequest`, without `tenant`.
+    record list-tasks-request {
+        /// Only the tasks of this context.
+        context-id: option<string>,
+        /// Only the tasks in this state.
+        status: option<task-state>,
+        /// The most tasks to return, from 1 to 100. The agent's default is 50.
+        page-size: option<u32>,
+        /// `next-page-token` from the previous page.
+        page-token: option<string>,
+        /// The most recent messages of each task's history to include.
+        history-length: option<u32>,
+        /// Only the tasks whose status changed at or after this ISO 8601
+        /// timestamp.
+        status-timestamp-after: option<string>,
+        /// Whether to include each task's artifacts. The agent's default is
+        /// false.
+        include-artifacts: option<bool>,
+    }
+
+    /// A2A's `ListTasksResponse`.
+    record list-tasks-response {
+        tasks: list<task>,
+        /// The token for the next page, or empty when there are no more.
+        next-page-token: string,
+        /// The page size used for this response.
+        page-size: u32,
+        /// The number of tasks available before paging.
+        total-size: u32,
+    }
+
+    /// A failed request. A JSON-RPC error from the agent has its `code` and
+    /// `data`. Any other failure, such as an unreachable agent, has only a
+    /// `message`.
+    record error {
+        message: string,
+        /// The JSON-RPC error code.
+        code: option<s32>,
+        /// The JSON-RPC error's data.
+        data: option<json>,
+    }
+
+    /// Fetches the agent's card from `server-url` and selects the first
+    /// interface the client supports. Each request to the agent asks it to
+    /// activate `extensions` (A2A's `A2A-Extensions`). Fails when the card has
+    /// no interface the client supports, or requires an extension that isn't
+    /// in `extensions`.
+    connect: async func(server-url: string, extensions: list<string>) -> result<agent, error>;
+
+    /// An agent on an A2A server.
+    resource agent {
+        /// The agent's card, as fetched by `connect`.
+        card: func() -> agent-card;
+
+        /// The interface that requests are sent to.
+        %interface: func() -> agent-interface;
+
+        /// The extensions listed as activated in the agent's most recent
+        /// response.
+        activated-extensions: func() -> list<string>;
+
+        /// A2A's `SendMessage`. Sends a message and returns the task that
+        /// handles it, or a message in response. An agent that streams
+        /// (`capabilities.streaming` on its card) also takes
+        /// `send-streaming-message`, which is preferred.
+        send-message: async func(request: send-message-request) -> result<send-message-response, error>;
+
+        /// A2A's `SendStreamingMessage`. Sends a message and streams the
+        /// agent's responses as they occur.
+        send-streaming-message: async func(request: send-message-request) -> result<message-response-stream, error>;
+
+        /// A2A's `GetTask`.
+        get-task: async func(request: get-task-request) -> result<task, error>;
+
+        /// A2A's `ListTasks`.
+        list-tasks: async func(request: list-tasks-request) -> result<list-tasks-response, error>;
+
+        /// A2A's `CancelTask`. Returns the task's updated state.
+        cancel-task: async func(request: cancel-task-request) -> result<task, error>;
+    }
+}

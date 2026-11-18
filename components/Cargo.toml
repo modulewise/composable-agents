@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "a2a/a2a-client",
     "agents/agent-interceptor-support",
     "agents/agent-otel-interceptor",
     "agents/agent-support",
