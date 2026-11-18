@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [workspace]
-members = ["crates/cli"]
+members = ["crates/cli", "crates/sse"]
 resolver = "3"
 
 [workspace.package]

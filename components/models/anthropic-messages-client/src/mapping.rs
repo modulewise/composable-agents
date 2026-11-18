@@ -5,7 +5,7 @@ use std::convert::Infallible;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use model_client_support::sse::{self, Events};
+use model_client_support::sse;
 use model_client_support::types::{
     ContentDelta, ContentSource, MediaData, ModelDelta, ModelError, ModelExchange,
     ModelFinishReason, ModelInputItem, ModelOutputItem, ModelResponse, ModelSettings,
@@ -677,7 +677,7 @@ pub(crate) async fn stream_response(
     deltas: &mut Deltas,
 ) -> Result<(ModelResponse, Option<Message>), ModelError> {
     let mut acc = Accumulator::default();
-    let mut events = Events::new(body);
+    let mut events = sse::events(body);
     while let Some(event) = events.next().await {
         for delta in apply(&mut acc, parse_event(&event)?)? {
             deltas.write(delta).await?;

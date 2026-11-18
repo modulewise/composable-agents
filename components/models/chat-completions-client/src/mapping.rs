@@ -3,7 +3,7 @@
 
 use std::convert::Infallible;
 
-use model_client_support::sse::Events;
+use model_client_support::sse;
 use model_client_support::types::{
     ContentDelta, ContentSource, ModelDelta, ModelError, ModelExchange, ModelFinishReason,
     ModelInputItem, ModelOutputItem, ModelResponse, ModelSettings, RequestParameters,
@@ -583,6 +583,9 @@ struct AccTool {
     arguments: String,
 }
 
+// The data of the event the API sends after the last chunk.
+const DONE: &str = "[DONE]";
+
 /// Reads the SSE body, writing deltas to `deltas`, and returns the assembled
 /// response and the assistant message for history. If the caller stops
 /// reading the deltas, it fails and drops the body, closing the connection.
@@ -591,11 +594,11 @@ pub(crate) async fn stream_response(
     deltas: &mut Deltas,
 ) -> Result<(ModelResponse, Message), ModelError> {
     let mut acc = Accumulator::default();
-    let mut events = Events::new(body);
+    let mut events = sse::events(body);
     // Each event's data is a chunk; the final `[DONE]` is skipped. Fails on an
     // error chunk, unreadable data, or when the caller stops reading the deltas.
     while let Some(event) = events.next().await {
-        if event.is_done() {
+        if event.data == DONE {
             continue;
         }
         apply_chunk(chunk_of(&event.data)?, &mut acc, deltas).await?;
