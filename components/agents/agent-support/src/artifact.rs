@@ -46,8 +46,8 @@ impl TextArtifact {
             task_id: ids.task_id.clone(),
             context_id: ids.context_id.clone(),
             artifact: self.with_text(chunk),
-            append: Some(append),
-            last_chunk: Some(last_chunk),
+            append,
+            last_chunk,
             metadata: None,
         })
     }
@@ -86,7 +86,7 @@ mod tests {
     }
 
     // An artifact event's chunk text, `append`, and `last-chunk`.
-    fn chunk(event: AgentEvent) -> (String, Option<bool>, Option<bool>) {
+    fn chunk(event: AgentEvent) -> (String, bool, bool) {
         let AgentEvent::Artifact(update) = event else {
             panic!("expected an artifact event");
         };
@@ -126,11 +126,11 @@ mod tests {
         assert!(artifact.push("Hel".to_string(), &ids).is_none());
         assert!(artifact.push(String::new(), &ids).is_none());
         let first = artifact.push("lo".to_string(), &ids).unwrap();
-        assert_eq!(chunk(first), ("Hel".to_string(), Some(false), Some(false)));
+        assert_eq!(chunk(first), ("Hel".to_string(), false, false));
         let second = artifact.push("!".to_string(), &ids).unwrap();
-        assert_eq!(chunk(second), ("lo".to_string(), Some(true), Some(false)));
+        assert_eq!(chunk(second), ("lo".to_string(), true, false));
         let last = artifact.finish(&ids).unwrap();
-        assert_eq!(chunk(last), ("!".to_string(), Some(true), Some(true)));
+        assert_eq!(chunk(last), ("!".to_string(), true, true));
         assert!(artifact.finish(&ids).is_none());
 
         assert_eq!(text(artifact.into_artifact().unwrap()), "Hello!");
@@ -143,7 +143,7 @@ mod tests {
 
         assert!(artifact.push("Hi".to_string(), &ids).is_none());
         let last = artifact.finish(&ids).unwrap();
-        assert_eq!(chunk(last), ("Hi".to_string(), Some(false), Some(true)));
+        assert_eq!(chunk(last), ("Hi".to_string(), false, true));
     }
 
     #[test]

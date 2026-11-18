@@ -7,7 +7,8 @@ Agents and model clients as Wasm components that run on
 
 The WIT they implement is in [components/agents](components/agents)
 (`composable:agents`) and [components/models](components/models)
-(`composable:models`).
+(`composable:models`). A client for agents on A2A servers is in
+[components/a2a](components/a2a) (`composable:a2a`).
 
 ## Examples
 

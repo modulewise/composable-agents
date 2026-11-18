@@ -212,7 +212,7 @@ fn show_event(
 ) -> bool {
     match event {
         AgentEvent::Artifact(update) => {
-            let appends = update.append == Some(true);
+            let appends = update.append;
             for (index, part) in update.artifact.parts.into_iter().enumerate() {
                 let text = part_text(part);
                 if text.is_empty() {
@@ -402,8 +402,8 @@ mod tests {
                 metadata: None,
                 extensions: Vec::new(),
             },
-            append: Some(append),
-            last_chunk: None,
+            append,
+            last_chunk: false,
             metadata: None,
         })
     }

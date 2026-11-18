@@ -1,0 +1,13 @@
+[package]
+name = "a2a-client"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sse = { path = "../../../crates/sse" }
+wit-bindgen = { workspace = true, features = ["async-spawn"] }

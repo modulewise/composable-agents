@@ -129,7 +129,7 @@ interface types {
         description: option<string>,
         /// If true, the client must understand and comply with the extension's
         /// requirements.
-        required: option<bool>,
+        required: bool,
         /// Extension-specific configuration parameters.
         params: option<json>,
     }
@@ -137,7 +137,7 @@ interface types {
     /// A security requirement: A2A's `SecurityRequirement`, with each security
     /// scheme's name as key and its required scopes as value.
     record security-requirement {
-        schemes: list<tuple<string, list<string>>>,
+        schemes: map<string, list<string>>,
     }
 
     /// A capability the agent offers its callers, as listed on its A2A card:
@@ -235,9 +235,9 @@ interface types {
         context-id: string,
         artifact: artifact,
         /// Adds to an artifact already sent with the same id.
-        append: option<bool>,
+        append: bool,
         /// The artifact's last chunk.
-        last-chunk: option<bool>,
+        last-chunk: bool,
         /// Event metadata.
         metadata: option<json>,
     }

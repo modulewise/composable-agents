@@ -18,6 +18,7 @@ REGISTRY="localhost:5001"
 REPOSITORY="composable-agents"
 TAG="latest"
 COMPONENTS=(
+  a2a-client
   agent-otel-interceptor
   anthropic-messages-client
   chat-agent

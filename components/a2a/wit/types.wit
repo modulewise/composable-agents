@@ -1,0 +1,168 @@
+/// Types for the A2A protocol that an agent's own interface doesn't need: the
+/// agent card and what a response streams. The types that both share (such as
+/// messages, tasks, artifacts and skills) are `composable:agents/types`.
+
+interface types {
+    use composable:agents/types@0.1.0.{
+        json,
+        message,
+        task,
+        task-status-update-event,
+        task-artifact-update-event,
+        agent-provider,
+        agent-extension,
+        agent-skill,
+        security-requirement,
+    };
+
+    /// One value the agent streams in its response: the task, an immediate
+    /// response message, or an update related to a task (status or artifact).
+    variant stream-response {
+        task(task),
+        message(message),
+        status-update(task-status-update-event),
+        artifact-update(task-artifact-update-event),
+    }
+
+    record api-key-security-scheme {
+        description: option<string>,
+        /// Location of the API key: "query", "header", or "cookie".
+        location: string,
+        /// Name of the header, query, or cookie parameter.
+        name: string,
+    }
+
+    record http-auth-security-scheme {
+        description: option<string>,
+        /// HTTP auth scheme name per RFC 7235 (e.g. "Bearer", "Basic").
+        scheme: string,
+        /// Hint for how the bearer token is formatted (e.g. "JWT").
+        bearer-format: option<string>,
+    }
+
+    record oauth2-security-scheme {
+        description: option<string>,
+        flows: oauth-flows,
+        /// URL to the OAuth2 authorization server metadata (RFC 8414).
+        oauth2-metadata-url: option<string>,
+    }
+
+    record open-id-connect-security-scheme {
+        description: option<string>,
+        /// OpenID Connect discovery URL.
+        open-id-connect-url: string,
+    }
+
+    record mutual-tls-security-scheme {
+        description: option<string>,
+    }
+
+    /// How to authenticate to an agent (one of the supported scheme types).
+    variant security-scheme {
+        api-key-security-scheme(api-key-security-scheme),
+        http-auth-security-scheme(http-auth-security-scheme),
+        oauth2-security-scheme(oauth2-security-scheme),
+        open-id-connect-security-scheme(open-id-connect-security-scheme),
+        mtls-security-scheme(mutual-tls-security-scheme),
+    }
+
+    record authorization-code-oauth-flow {
+        authorization-url: string,
+        token-url: string,
+        refresh-url: option<string>,
+        /// Available scopes: name as key, description as value.
+        scopes: map<string, string>,
+        /// Whether PKCE (RFC 7636) is required.
+        pkce-required: bool,
+    }
+
+    record client-credentials-oauth-flow {
+        token-url: string,
+        refresh-url: option<string>,
+        scopes: map<string, string>,
+    }
+
+    /// Deprecated by OAuth 2.1; included for completeness.
+    record implicit-oauth-flow {
+        authorization-url: option<string>,
+        refresh-url: option<string>,
+        scopes: map<string, string>,
+    }
+
+    /// Deprecated by OAuth 2.1; included for completeness.
+    record password-oauth-flow {
+        token-url: option<string>,
+        refresh-url: option<string>,
+        scopes: map<string, string>,
+    }
+
+    record device-code-oauth-flow {
+        device-authorization-url: string,
+        token-url: string,
+        refresh-url: option<string>,
+        scopes: map<string, string>,
+    }
+
+    /// The configured flow for an oauth2 scheme.
+    variant oauth-flows {
+        authorization-code(authorization-code-oauth-flow),
+        client-credentials(client-credentials-oauth-flow),
+        implicit(implicit-oauth-flow),
+        password(password-oauth-flow),
+        device-code(device-code-oauth-flow),
+    }
+
+    /// A JWS signature over an agent-card (RFC 7515).
+    record agent-card-signature {
+        /// Base64url-encoded protected JWS header.
+        protected: string,
+        /// Base64url-encoded signature.
+        signature: string,
+        /// Unprotected JWS header values.
+        header: option<json>,
+    }
+
+    /// Agent endpoint with protocol details.
+    record agent-interface {
+        /// URL where this interface is available.
+        url: string,
+        /// Protocol binding (e.g. "JSONRPC", "GRPC", "HTTP+JSON").
+        protocol-binding: string,
+        /// Routing value, if the endpoint requires one.
+        tenant: option<string>,
+        /// A2A protocol version this interface exposes.
+        protocol-version: string,
+    }
+
+    record agent-capabilities {
+        streaming: option<bool>,
+        push-notifications: option<bool>,
+        extensions: list<agent-extension>,
+        extended-agent-card: option<bool>,
+    }
+
+    /// A self-describing manifest for an agent.
+    record agent-card {
+        name: string,
+        description: string,
+        /// Supported interfaces (at least one); the first entry is preferred.
+        supported-interfaces: list<agent-interface>,
+        provider: option<agent-provider>,
+        version: string,
+        documentation-url: option<string>,
+        capabilities: agent-capabilities,
+        /// Security schemes the agent supports, by scheme name.
+        security-schemes: map<string, security-scheme>,
+        /// Security requirements for contacting the agent.
+        security-requirements: list<security-requirement>,
+        /// Default input media types for this agent (at least one).
+        default-input-modes: list<string>,
+        /// Default output media types for this agent (at least one).
+        default-output-modes: list<string>,
+        /// The agent's skills (at least one).
+        skills: list<agent-skill>,
+        /// JWS signatures computed over this agent-card.
+        signatures: list<agent-card-signature>,
+        icon-url: option<string>,
+    }
+}
