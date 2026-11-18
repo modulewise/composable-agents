@@ -77,7 +77,18 @@ audio, video, and documents. It maps `output-schema` to a strict JSON Schema
 | `api-key` | optional: sent as a bearer token when set (most hosted providers require one) |
 | `max-tokens` | optional default, overridden by `model-settings` and the request |
 | `max-tokens-field` | default: `max_completion_tokens`; `max_tokens` for providers that still use it (such as Ollama) |
+| `temperature` | optional default, overridden by `model-settings` |
+| `top-p` | optional default, overridden by `model-settings` |
+| `seed` | optional default, overridden by `model-settings` |
+| `stop-sequences` | optional default, a JSON array of strings (e.g. `'["END"]'`), overridden by `model-settings` |
 | `effort` | optional: sent as `reasoning_effort` unchanged, since the values depend on the provider and model |
+
+It fails a session when `top-k` is configured, since the API has no `top_k`. A
+`top-k` in `model-settings` isn't sent.
+
+Whether a setting has an effect depends on the provider and model. With Ollama,
+some models ignore stop sequences, and OpenAI rejects them for some models with
+a 400.
 
 ## anthropic-messages-client
 
@@ -101,9 +112,14 @@ off exponentially (0.5s doubling up to 8s).
 | `base-url` | default: `https://api.anthropic.com/v1` |
 | `api-key` | optional: sent as a bearer token when set |
 | `max-tokens` | default: 64000, overridden by `model-settings` and the request |
+| `stop-sequences` | optional default, a JSON array of strings (e.g. `'["END"]'`), overridden by `model-settings` |
 | `effort` | optional: `low`, `medium`, `high`, `xhigh` or `max`, sent as `output_config.effort` |
 | `include-reasoning` | default: `false`; `true` asks for adaptive thinking with a summary in each response |
 | `max-retries` | default: 2; how many times a failed request may be resent |
+
+It fails a session when `temperature`, `top-p`, `top-k` or `seed` is
+configured, since the API rejects the first three and has no `seed`. Those in
+`model-settings` aren't sent.
 
 It imports `wasi:clocks/monotonic-clock` for any waits between retries.
 

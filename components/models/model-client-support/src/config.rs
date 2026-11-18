@@ -11,9 +11,14 @@ const BASE_URL_CONFIG: &str = "base-url";
 const MAX_TOKENS_CONFIG: &str = "max-tokens";
 const MODEL_CONFIG: &str = "model";
 const PROVIDER_CONFIG: &str = "provider";
+pub const SEED_CONFIG: &str = "seed";
+pub const STOP_SEQUENCES_CONFIG: &str = "stop-sequences";
+pub const TEMPERATURE_CONFIG: &str = "temperature";
+pub const TOP_K_CONFIG: &str = "top-k";
+pub const TOP_P_CONFIG: &str = "top-p";
 
-/// The config every client reads: model, provider, base URL, API key and
-/// default `max-tokens`.
+/// The config every client reads: model, provider, base URL, API key, and the
+/// default `max-tokens` and sampling settings.
 pub struct CommonConfig {
     pub model: String,
     pub provider: String,
@@ -23,6 +28,11 @@ pub struct CommonConfig {
     pub server: Server,
     pub api_key: Option<String>,
     pub max_tokens: Option<u32>,
+    pub temperature: Option<f64>,
+    pub top_p: Option<f64>,
+    pub top_k: Option<u32>,
+    pub seed: Option<u64>,
+    pub stop_sequences: Option<Vec<String>>,
 }
 
 impl CommonConfig {
@@ -39,8 +49,35 @@ impl CommonConfig {
             server: server(&base_url)?,
             api_key: get_config(API_KEY_CONFIG),
             max_tokens: parsed_config(MAX_TOKENS_CONFIG, "a number")?,
+            temperature: parsed_config(TEMPERATURE_CONFIG, "a number")?,
+            top_p: parsed_config(TOP_P_CONFIG, "a number")?,
+            top_k: parsed_config(TOP_K_CONFIG, "a number")?,
+            seed: parsed_config(SEED_CONFIG, "a number")?,
+            stop_sequences: get_config(STOP_SEQUENCES_CONFIG)
+                .map(|value| stop_sequences(&value))
+                .transpose()?,
         })
     }
+}
+
+/// Fails if any of `keys` is configured. A client calls it with the common
+/// keys that `api` does not take.
+pub fn reject_config(keys: &[&str], api: &str) -> Result<(), ModelError> {
+    match keys.iter().find(|key| get_config(key).is_some()) {
+        Some(key) => Err(ModelError::new(format!(
+            "'{key}' is configured, but the {api} API does not take it"
+        ))),
+        None => Ok(()),
+    }
+}
+
+// The stop sequences in `value`, a JSON array of strings.
+fn stop_sequences(value: &str) -> Result<Vec<String>, ModelError> {
+    serde_json::from_str(value).map_err(|_| {
+        ModelError::new(format!(
+            "'{STOP_SEQUENCES_CONFIG}' must be a JSON array of strings"
+        ))
+    })
 }
 
 /// The config value for `key`, if set.
@@ -121,6 +158,21 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(error.message, "'base-url' has no host");
+    }
+
+    #[test]
+    fn stop_sequences_are_a_json_array_of_strings() {
+        assert_eq!(
+            stop_sequences(r#"["END", "a, b"]"#).unwrap(),
+            vec!["END".to_string(), "a, b".to_string()]
+        );
+        for invalid in ["END", r#"["END", 1]"#, r#"{"a": "b"}"#] {
+            assert_eq!(
+                stop_sequences(invalid).err().unwrap().message,
+                "'stop-sequences' must be a JSON array of strings",
+                "{invalid}"
+            );
+        }
     }
 
     #[test]

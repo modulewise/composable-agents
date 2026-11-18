@@ -20,7 +20,8 @@ use model_client_support::types::{
     ModelSettings, RequestParameters, SessionError,
 };
 use model_client_support::{
-    Client, Deltas, Outcome, Session, get_config, parsed_config, require_answered_tool_calls,
+    Client, Deltas, Outcome, Session, TOP_K_CONFIG, get_config, parsed_config, reject_config,
+    require_answered_tool_calls,
 };
 use wit_bindgen::rt::async_support::{FutureReader, FutureWriter, StreamReader, StreamWriter};
 
@@ -55,6 +56,8 @@ impl Client for ChatCompletionsClient {
     const PATH: &'static str = "/chat/completions";
 
     fn config() -> Result<ChatCompletionsConfig, ModelError> {
+        // The API has no `top_k`.
+        reject_config(&[TOP_K_CONFIG], Self::API)?;
         Ok(ChatCompletionsConfig {
             effort: get_config(EFFORT_CONFIG),
             max_tokens_field: parsed_config(
