@@ -21,7 +21,7 @@ use crate::exports::composable::a2a::client::{
     SendMessageRequest, SendMessageResponse,
 };
 
-/// The JSON-RPC binding, as an agent card names it.
+/// The JSON-RPC binding, as specified by an agent card.
 const JSONRPC: &str = "JSONRPC";
 
 /// The agent card in `bytes`. Fails when a required field is missing.
@@ -126,9 +126,9 @@ pub(crate) fn list_tasks_response(result: Value) -> Result<ListTasksResponse, St
     })
 }
 
-// `value` as `T`. `what` names it in the error.
-fn parsed<T: DeserializeOwned>(value: Value, what: &str) -> Result<T, String> {
-    serde_json::from_value(value).map_err(|e| format!("the agent's {what} is not valid: {e}"))
+// `value` as `T`. `name` identifies the value in the error.
+fn parsed<T: DeserializeOwned>(value: Value, name: &str) -> Result<T, String> {
+    serde_json::from_value(value).map_err(|e| format!("the agent's {name} is not valid: {e}"))
 }
 
 /// The params of `SendMessage` and `SendStreamingMessage`. Fails on a message
@@ -308,13 +308,13 @@ fn json_text(value: Option<Value>) -> Option<String> {
 }
 
 // The one value that is set among a `oneof`'s fields. Fails when none or
-// several are. `what` names the `oneof` in the error.
-fn one_of<T>(fields: impl IntoIterator<Item = Option<T>>, what: &str) -> Result<T, String> {
+// several are. `name` identifies the `oneof` in the error.
+fn one_of<T>(fields: impl IntoIterator<Item = Option<T>>, name: &str) -> Result<T, String> {
     let mut set = fields.into_iter().flatten();
     match (set.next(), set.next()) {
         (Some(value), None) => Ok(value),
-        (None, _) => Err(format!("{what} has none of its possible fields")),
-        (Some(_), Some(_)) => Err(format!("{what} has more than one of its possible fields")),
+        (None, _) => Err(format!("{name} has none of its possible fields")),
+        (Some(_), Some(_)) => Err(format!("{name} has more than one of its possible fields")),
     }
 }
 
@@ -340,11 +340,11 @@ impl TryFrom<wire::Part> for Part {
     }
 }
 
-// `list`, which A2A requires to have at least one element. `what` names it in
-// the error.
-fn non_empty<T>(list: Vec<T>, what: &str) -> Result<Vec<T>, String> {
+// `list`, which A2A requires to have at least one element. `name` identifies
+// the list in the error.
+fn non_empty<T>(list: Vec<T>, name: &str) -> Result<Vec<T>, String> {
     if list.is_empty() {
-        return Err(format!("{what} must have at least one element"));
+        return Err(format!("{name} must have at least one element"));
     }
     Ok(list)
 }
@@ -1147,7 +1147,7 @@ mod tests {
 
     #[test]
     fn a_required_list_must_have_an_element() {
-        for (field, what) in [
+        for (field, name) in [
             ("supportedInterfaces", "a card's interfaces"),
             ("defaultInputModes", "a card's input modes"),
             ("defaultOutputModes", "a card's output modes"),
@@ -1157,7 +1157,7 @@ mod tests {
             json[field] = json!([]);
             assert_eq!(
                 card(&json).err().unwrap(),
-                format!("{what} must have at least one element")
+                format!("{name} must have at least one element")
             );
         }
         let mut json = card_json();

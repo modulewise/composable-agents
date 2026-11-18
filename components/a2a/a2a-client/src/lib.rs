@@ -59,7 +59,7 @@ impl Guest for Component {
         Ok(Agent::new(RemoteAgent {
             card,
             interface,
-            extensions,
+            requested_extensions: extensions,
             activated_extensions: RefCell::new(Vec::new()),
         }))
     }
@@ -71,7 +71,7 @@ struct RemoteAgent {
     // The interface that requests are sent to.
     interface: AgentInterface,
     // The extensions each request asks the agent to activate.
-    extensions: Vec<String>,
+    requested_extensions: Vec<String>,
     // The extensions the agent's most recent response listed as activated.
     activated_extensions: RefCell<Vec<String>>,
 }
@@ -166,8 +166,11 @@ impl RemoteAgent {
             ("accept".to_string(), accept.to_string()),
             version_header(),
         ];
-        if !self.extensions.is_empty() {
-            headers.push((EXTENSIONS_HEADER.to_string(), self.extensions.join(",")));
+        if !self.requested_extensions.is_empty() {
+            headers.push((
+                EXTENSIONS_HEADER.to_string(),
+                self.requested_extensions.join(","),
+            ));
         }
         let response =
             http::post(&self.interface.url, headers, body.to_string().into_bytes()).await?;
@@ -185,7 +188,7 @@ impl RemoteAgent {
 }
 
 // A stream of the responses that `write` writes, with a result that resolves
-// to what `write` returns. The responses end before the result resolves.
+// to the value `write` returns. The responses end before the result resolves.
 fn response_stream(
     write: impl AsyncFnOnce(&mut StreamWriter<StreamResponse>) -> Result<(), Error> + 'static,
 ) -> MessageResponseStream {
@@ -251,8 +254,8 @@ async fn relay(
     }
 }
 
-// Whether a stream may end after `response`: a message, or a task in a
-// terminal or interrupted state.
+// Whether a stream may end after `response`. Returns `true` for any message,
+// or a task that is in a terminal or interrupted state.
 fn is_last(response: &StreamResponse) -> bool {
     let state = match response {
         StreamResponse::Message(_) => return true,

@@ -7,12 +7,11 @@ See [`wit/`](wit) for the full definitions.
 ## Interfaces
 
 - **`types`:** the agent card, with its interfaces, capabilities, security
-  schemes and signatures, and what a response streams.
+  schemes and signatures, and the responses an agent streams.
 - **`client`:** a client for one agent on an A2A server.
 
-The types follow A2A's `a2a.proto`, field for field. Those that an agent's own
-interface also uses (messages, tasks, artifacts, skills) are
-[`composable:agents/types`](../agents), which this package builds on.
+The types follow A2A's `a2a.proto`, field for field, and build on
+[`composable:agents/types`](../agents).
 
 ## client
 
@@ -25,7 +24,7 @@ the client supports, or requires an extension that isn't in `extensions`.
 An `agent` has:
 
 - **`card()`** and **`interface()`:** the card as fetched, and the interface
-  that requests are sent to.
+  to which requests are sent.
 - **`send-message(request)`:** A2A's `SendMessage`. It returns the task that
   handles the message, or a message in response. By default the agent waits
   until the task reaches a terminal or interrupted state. With
@@ -42,14 +41,13 @@ An `agent` has:
 Each request record is A2A's, without `tenant`, which the client takes from
 the selected interface.
 
-There are three kinds of failure:
+A failure is reported in one of three ways:
 
-- **The request was rejected.** The operation returns an `error`, with the
-  JSON-RPC `code` and `data` when the agent sent them (e.g. `-32001`, task not
-  found).
-- **The task ran and ended badly.** That isn't an error. The task's state is
-  `failed`, `rejected` or `canceled`, as A2A defines.
-- **A stream failed.** The future of `send-streaming-message` resolves to an
+- **Request errors.** The operation returns an `error`, with the JSON-RPC
+  `code` and `data` when the agent sent them (e.g. `-32001`, task not found).
+- **Task states.** A task whose state is `failed`, `rejected`, or `canceled` is
+  a response, not an error. The operation succeeds and returns the task.
+- **Stream errors.** The future of `send-streaming-message` resolves to an
   `error` when an event has a JSON-RPC error or isn't valid, or the responses
   end before a message arrives or the task reaches a terminal or interrupted
   state.
@@ -63,11 +61,11 @@ selects the first `JSONRPC` interface on the card whose `protocol-version` is
 - **Required fields are checked.** A card or a response without a field that
   A2A requires, or with an empty list where A2A requires an element, is not
   valid, and the operation fails.
-- **A message needs its id.** A2A has the message's creator give it an id, so
-  the client fails on a message whose `message-id` is empty.
+- **Message ids are required.** A2A requires a message's creator to assign its
+  id, so the client fails on a message whose `message-id` is empty.
 - **No redirect is followed.** A redirect response is an error.
-- **No authentication yet.** The card's security schemes are read, but the
-  client sends no credentials.
+- **Authentication is not supported.** The card's security schemes are read,
+  but the client sends no credentials.
 
 It imports `componentized:http/client`, and has no config.
 

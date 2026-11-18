@@ -1,8 +1,7 @@
 package composable:a2a@0.1.0;
 
-/// Types for the A2A protocol that an agent's own interface doesn't need: the
-/// agent card and what a response streams. The types that both share (such as
-/// messages, tasks, artifacts and skills) are `composable:agents/types`.
+/// Types for the A2A protocol, built on `composable:agents/types`. They
+/// describe the agent card and the responses an agent streams.
 interface types {
   use composable:agents/types@0.1.0.{json, message, task, task-status-update-event, task-artifact-update-event, agent-provider, agent-extension, agent-skill, security-requirement};
 
