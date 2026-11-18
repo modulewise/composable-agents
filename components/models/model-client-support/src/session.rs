@@ -1,6 +1,6 @@
 //! A model-client session, shared by every client.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::future::Future;
 use std::rc::Rc;
 use std::time::Duration;
@@ -146,6 +146,9 @@ pub struct Session<C: Client> {
     state: Rc<RefCell<C::State>>,
     // Each call's exchange, shared with the task that reads its response.
     exchanges: RefCell<Vec<Rc<RefCell<ModelExchange>>>>,
+    // Whether a call's result is pending, shared with the task that resolves
+    // it.
+    pending: Rc<Cell<bool>>,
 }
 
 impl<C: Client> Session<C> {
@@ -165,6 +168,7 @@ impl<C: Client> Session<C> {
             names: Rc::new(names),
             state: Rc::new(RefCell::new(state)),
             exchanges: RefCell::new(Vec::new()),
+            pending: Rc::new(Cell::new(false)),
         })
     }
 
@@ -188,13 +192,17 @@ impl<C: Client> Session<C> {
     }
 
     // Adds the input to the state, builds the body, records the exchange, and
-    // sends the request. A failure adding the input or building the body fails
-    // the call before it's recorded or sent.
+    // sends the request. A call made while another call's result is pending,
+    // or a failure adding the input or building the body, fails the call
+    // before it's recorded or sent.
     fn respond(
         &self,
         request: ModelRequest,
         max_tokens: Option<u32>,
     ) -> Result<ModelResponseStream, ModelError> {
+        if self.pending.get() {
+            return Err(ModelError::new("the session has a call in progress"));
+        }
         C::add_input(&mut self.state.borrow_mut(), &sent_input(&request.input))?;
         let body = C::request(
             &self.common.model,
@@ -215,6 +223,7 @@ impl<C: Client> Session<C> {
             usage: TokenUsage::default(),
         }));
         self.exchanges.borrow_mut().push(exchange.clone());
+        self.pending.set(true);
 
         // Send the request and read the response in a spawned task that writes
         // the deltas, assembles the response, updates the state, and resolves
@@ -230,6 +239,7 @@ impl<C: Client> Session<C> {
 
         let state = self.state.clone();
         let names = self.names.clone();
+        let pending = self.pending.clone();
         spawn_local(async move {
             let mut deltas = Deltas {
                 writer: delta_tx,
@@ -252,6 +262,9 @@ impl<C: Client> Session<C> {
                 recorded.usage = response.usage;
                 response
             });
+            // Cleared before the result is written, so a caller that has the
+            // result can make the next call.
+            pending.set(false);
             let _ = outcome_tx.write(outcome).await;
         });
 

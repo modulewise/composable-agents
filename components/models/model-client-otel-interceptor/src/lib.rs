@@ -1,6 +1,6 @@
 //! Wraps a `composable:models/client` session and emits a `chat` span for each
-//! call a client receives, following the OpenTelemetry GenAI semantic
-//! conventions. The span ends when the call ends.
+//! call, following the OpenTelemetry GenAI semantic conventions. The span ends
+//! when the call ends.
 
 wit_bindgen::generate!({
     path: "wit",
@@ -18,7 +18,7 @@ use model_client_interceptor_support::types::{
     ModelRequest, ModelResponse, ModelSettings, SessionError, TokenUsage,
 };
 use model_client_interceptor_support::{
-    CallInterceptor, Ending, Flow, Outcome, Session, SessionInterceptor,
+    Action, CallInterceptor, Outcome, Session, SessionInterceptor,
 };
 use wasi::clocks::system_clock::{self, Instant};
 use wasi::otel::{logs, tracing, types};
@@ -37,7 +37,7 @@ impl SessionInterceptor for Otel {
 
     fn new(
         _settings: &mut ModelSettings,
-        _history: &mut Vec<ModelExchange>,
+        _history: &[ModelExchange],
     ) -> Result<Self, SessionError> {
         Ok(Otel)
     }
@@ -66,11 +66,13 @@ struct ChatSpan {
     first_chunk: Option<Instant>,
     // The latest counts from a usage delta.
     usage: Option<TokenUsage>,
+    // Whether the span has ended.
+    ended: bool,
 }
 
 impl CallInterceptor for ChatSpan {
     // Adds the model, provider, server and parameters of `call`.
-    fn on_describe(&mut self, call: &ModelCall) {
+    fn on_call(&mut self, call: &ModelCall) {
         self.name = format!("chat {}", call.request_model);
         self.add("gen_ai.provider.name", call.provider.as_str());
         self.add("gen_ai.request.model", call.request_model.as_str());
@@ -102,7 +104,7 @@ impl CallInterceptor for ChatSpan {
     }
 
     // Notes when the first delta with output arrives, and the latest counts.
-    fn on_delta(&mut self, delta: &mut ModelDelta) -> Flow {
+    fn on_delta(&mut self, delta: &ModelDelta) -> Action {
         match delta {
             ModelDelta::Usage(counts) => self.usage = Some(*counts),
             ModelDelta::Content(content) if self.first_chunk.is_none() && has_output(content) => {
@@ -110,12 +112,30 @@ impl CallInterceptor for ChatSpan {
             }
             ModelDelta::Content(_) => {}
         }
-        Flow::Continue
+        Action::Continue
     }
 
-    fn on_end(self, ending: Ending, outcome: Outcome) -> Outcome {
-        self.end(ending, &outcome);
-        outcome
+    fn on_result(mut self, outcome: &Outcome, canceled: bool) {
+        match outcome {
+            Ok(response) => self.end_with_response(response),
+            Err(_) if canceled => self.end_canceled(),
+            Err(error) => self.end_failed(error),
+        }
+    }
+
+    fn on_error(mut self, error: ModelError) -> ModelError {
+        self.end_failed(&error);
+        error
+    }
+}
+
+// A span dropped before it ended, e.g. when the caller drops its pending
+// `call`, ends as canceled.
+impl Drop for ChatSpan {
+    fn drop(&mut self) {
+        if !self.ended {
+            self.end_canceled();
+        }
     }
 }
 
@@ -165,12 +185,40 @@ impl ChatSpan {
             attributes: vec![kv("gen_ai.operation.name", "chat")],
             first_chunk: None,
             usage: None,
+            ended: false,
         }
     }
 
-    // Ends the span with how the call ended and its outcome. A failure also
-    // emits an exception event. A canceled call is not a failure.
-    fn end(mut self, ending: Ending, outcome: &Outcome) {
+    // Ends the span with the response.
+    fn end_with_response(&mut self, response: &ModelResponse) {
+        self.add_response(response);
+        self.add_usage(&response.usage);
+        self.end(tracing::Status::Unset);
+    }
+
+    // Ends the span of a canceled call, which is not a failure.
+    fn end_canceled(&mut self) {
+        self.add("gen_ai.response.finish_reasons", vec!["error"]);
+        if let Some(usage) = self.usage {
+            self.add_usage(&usage);
+        }
+        self.end(tracing::Status::Unset);
+    }
+
+    // Ends the span with the error, and emits an exception event.
+    fn end_failed(&mut self, error: &ModelError) {
+        self.add("gen_ai.response.finish_reasons", vec!["error"]);
+        self.add("error.type", error_type(error));
+        if let Some(usage) = self.usage {
+            self.add_usage(&usage);
+        }
+        self.emit_exception(error, system_clock::now());
+        self.end(tracing::Status::Error(error.message.clone()));
+    }
+
+    // Adds the time to the first chunk, and ends the span.
+    fn end(&mut self, status: tracing::Status) {
+        self.ended = true;
         let end = system_clock::now();
         if let Some(first_chunk) = self.first_chunk {
             self.add(
@@ -178,34 +226,14 @@ impl ChatSpan {
                 seconds_between(&self.start, &first_chunk),
             );
         }
-        let (status, usage) = match outcome {
-            Ok(response) => {
-                self.add_response(response);
-                (tracing::Status::Unset, Some(response.usage))
-            }
-            Err(_) if ending == Ending::Canceled => {
-                self.add("gen_ai.response.finish_reasons", vec!["error"]);
-                self.add("gen_ai.response.status", "cancelled");
-                (tracing::Status::Unset, self.usage)
-            }
-            Err(error) => {
-                self.add("gen_ai.response.finish_reasons", vec!["error"]);
-                self.add("error.type", error_type(error));
-                self.emit_exception(error, end);
-                (tracing::Status::Error(error.message.clone()), self.usage)
-            }
-        };
-        if let Some(usage) = usage {
-            self.add_usage(&usage);
-        }
         tracing::on_end(&tracing::SpanData {
-            span_context: self.context,
-            parent_span_id: self.parent_span_id,
+            span_context: self.context.clone(),
+            parent_span_id: std::mem::take(&mut self.parent_span_id),
             span_kind: tracing::SpanKind::Client,
-            name: self.name,
+            name: std::mem::take(&mut self.name),
             start_time: self.start,
             end_time: end,
-            attributes: self.attributes,
+            attributes: std::mem::take(&mut self.attributes),
             events: Vec::new(),
             links: Vec::new(),
             status,
