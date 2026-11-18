@@ -39,7 +39,10 @@ pub use componentized::http::client as http_client;
 pub use composable::models::types;
 pub use wasi::config::store as config_store;
 
-pub use config::{CommonConfig, get_config, parsed_config, required_config};
+pub use config::{
+    CommonConfig, SEED_CONFIG, STOP_SEQUENCES_CONFIG, TEMPERATURE_CONFIG, TOP_K_CONFIG,
+    TOP_P_CONFIG, get_config, parsed_config, reject_config, required_config,
+};
 pub use history::{
     history_input_note, media_detail, output_media_note, require_answered_tool_calls,
     tool_result_media_note, unsendable_input_error,

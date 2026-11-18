@@ -32,6 +32,10 @@ name = "gpt-oss:20b"
 | `provider` | yes | `anthropic`, `ollama` or `openai` (more to come) |
 | `name` | yes | the provider's model name |
 | `max-tokens` | no | the default limit on output tokens per call, overridden by the agent's settings or request |
+| `temperature` | no | `ollama` and `openai` only: the default sampling temperature, overridden by the agent's settings |
+| `top-p` | no | `ollama` and `openai` only: the default nucleus sampling probability, overridden by the agent's settings |
+| `seed` | no | `ollama` and `openai` only: the default sampling seed, overridden by the agent's settings |
+| `stop-sequences` | no | a list of strings that each end the model's output, as the default, overridden by the agent's settings |
 | `effort` | no | how much effort the model uses on a response. For `anthropic`, one of `low`, `medium`, `high`, `xhigh` or `max`. For `ollama` and `openai`, sent as `reasoning_effort` unchanged, with values that depend on the provider and model |
 | `include-reasoning` | no | `anthropic` only: `true` to include a summary of the model's reasoning in the response (default `false`) |
 | `max-retries` | no | `anthropic` only: how many times a request may be resent after failure (default 2) |

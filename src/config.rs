@@ -74,6 +74,11 @@ impl ConfigHandler for AgentConfigHandler {
                     "provider",
                     "name",
                     "max-tokens",
+                    "temperature",
+                    "top-p",
+                    "top-k",
+                    "seed",
+                    "stop-sequences",
                     "effort",
                     "include-reasoning",
                     "max-retries",
@@ -157,6 +162,46 @@ impl AgentConfigHandler {
                 );
             }
             config.insert("max-retries".to_string(), json!(max_retries));
+        }
+        // The sampling settings, each with whether the provider's API takes
+        // it. The Messages API takes only `stop-sequences`, and no API here
+        // takes `top-k`. The stop sequences are passed as a JSON array.
+        let stop_sequences = optional_strings(&context, "stop-sequences", properties)?
+            .map(|sequences| serde_json::to_string(&sequences))
+            .transpose()?;
+        let sampling = [
+            (
+                "temperature",
+                optional_f64(&context, "temperature", properties)?.map(|value| json!(value)),
+                !messages_api,
+            ),
+            (
+                "top-p",
+                optional_f64(&context, "top-p", properties)?.map(|value| json!(value)),
+                !messages_api,
+            ),
+            (
+                "top-k",
+                optional_u32(&context, "top-k", properties)?.map(|value| json!(value)),
+                false,
+            ),
+            (
+                "seed",
+                optional_u64(&context, "seed", properties)?.map(|value| json!(value)),
+                !messages_api,
+            ),
+            (
+                "stop-sequences",
+                stop_sequences.map(|value| json!(value)),
+                true,
+            ),
+        ];
+        for (key, value, supported) in sampling {
+            let Some(value) = value else { continue };
+            if !supported {
+                bail!("{context}: '{key}' is not supported for provider '{provider}'");
+            }
+            config.insert(key.to_string(), value);
         }
         if let Some(base_url) = base_url {
             config.insert("base-url".to_string(), json!(base_url));
@@ -311,6 +356,47 @@ fn optional_bool(context: &str, key: &str, properties: &mut PropertyMap) -> Resu
     match properties.remove(key) {
         Some(Value::Bool(value)) => Ok(Some(value)),
         Some(got) => bail!("{context}: '{key}' must be true or false, got {got}"),
+        None => Ok(None),
+    }
+}
+
+fn optional_f64(context: &str, key: &str, properties: &mut PropertyMap) -> Result<Option<f64>> {
+    match properties.remove(key) {
+        Some(Value::Number(number)) => number
+            .as_f64()
+            .map(Some)
+            .ok_or_else(|| anyhow::anyhow!("{context}: '{key}' must be a number")),
+        Some(got) => bail!("{context}: '{key}' must be a number, got {got}"),
+        None => Ok(None),
+    }
+}
+
+fn optional_u64(context: &str, key: &str, properties: &mut PropertyMap) -> Result<Option<u64>> {
+    match properties.remove(key) {
+        Some(Value::Number(number)) => number
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| anyhow::anyhow!("{context}: '{key}' must be a non-negative integer")),
+        Some(got) => bail!("{context}: '{key}' must be a number, got {got}"),
+        None => Ok(None),
+    }
+}
+
+fn optional_strings(
+    context: &str,
+    key: &str,
+    properties: &mut PropertyMap,
+) -> Result<Option<Vec<String>>> {
+    match properties.remove(key) {
+        Some(Value::Array(items)) => items
+            .into_iter()
+            .map(|item| match item {
+                Value::String(item) => Ok(item),
+                got => bail!("{context}: '{key}' must be a list of strings, got {got}"),
+            })
+            .collect::<Result<Vec<_>>>()
+            .map(Some),
+        Some(got) => bail!("{context}: '{key}' must be a list of strings, got {got}"),
         None => Ok(None),
     }
 }
@@ -561,6 +647,73 @@ mod tests {
                 produced[&key("component", "other")]["config"]["effort"],
                 "high",
                 "{provider}"
+            );
+        }
+    }
+
+    #[test]
+    fn sampling_settings_are_passed_to_the_client() {
+        for provider in ["ollama", "openai"] {
+            let mut handler = AgentConfigHandler::default();
+            let definitions = handler
+                .handle_definition(definition(
+                    "model",
+                    "other",
+                    json!({
+                        "provider": provider,
+                        "name": "m",
+                        "temperature": 0.2,
+                        "top-p": 0.9,
+                        "seed": 0,
+                        "stop-sequences": ["END", "a, b"],
+                    }),
+                ))
+                .unwrap();
+            let produced = produced(definitions);
+            let config = &produced[&key("component", "other")]["config"];
+            assert_eq!(config["temperature"], 0.2, "{provider}");
+            assert_eq!(config["top-p"], 0.9, "{provider}");
+            assert_eq!(config["seed"], 0, "{provider}");
+            assert_eq!(config["stop-sequences"], r#"["END","a, b"]"#, "{provider}");
+        }
+
+        let mut handler = AgentConfigHandler::default();
+        let definitions = handler
+            .handle_definition(definition(
+                "model",
+                "other",
+                json!({ "provider": "anthropic", "name": "m", "stop-sequences": ["END"] }),
+            ))
+            .unwrap();
+        let produced = produced(definitions);
+        assert_eq!(
+            produced[&key("component", "other")]["config"]["stop-sequences"],
+            r#"["END"]"#
+        );
+    }
+
+    #[test]
+    fn a_sampling_setting_the_providers_api_does_not_take_is_rejected() {
+        for (provider, property, value) in [
+            ("anthropic", "temperature", json!(0.2)),
+            ("anthropic", "top-p", json!(0.9)),
+            ("anthropic", "top-k", json!(40)),
+            ("anthropic", "seed", json!(7)),
+            ("ollama", "top-k", json!(40)),
+            ("openai", "top-k", json!(40)),
+        ] {
+            let mut properties = json!({ "provider": provider, "name": "m" });
+            properties[property] = value;
+            let mut handler = AgentConfigHandler::default();
+            let error = handler
+                .handle_definition(definition("model", "other", properties))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(&format!(
+                    "'{property}' is not supported for provider '{provider}'"
+                )),
+                "{error}"
             );
         }
     }

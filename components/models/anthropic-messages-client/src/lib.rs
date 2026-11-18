@@ -20,7 +20,8 @@ use model_client_support::types::{
     ModelSettings, RequestParameters, SessionError,
 };
 use model_client_support::{
-    Client, Deltas, Outcome, Session, parsed_config, require_answered_tool_calls,
+    Client, Deltas, Outcome, SEED_CONFIG, Session, TEMPERATURE_CONFIG, TOP_K_CONFIG, TOP_P_CONFIG,
+    parsed_config, reject_config, require_answered_tool_calls,
 };
 use std::time::Duration;
 
@@ -67,6 +68,11 @@ impl Client for MessagesClient {
     const DEFAULT_MAX_TOKENS: Option<u32> = Some(64000);
 
     fn config() -> Result<MessagesConfig, ModelError> {
+        // The API rejects the first three and has no `seed`.
+        reject_config(
+            &[TEMPERATURE_CONFIG, TOP_P_CONFIG, TOP_K_CONFIG, SEED_CONFIG],
+            Self::API,
+        )?;
         Ok(MessagesConfig {
             effort: parsed_config(EFFORT_CONFIG, mapping::EFFORT_VALUES)?,
             include_reasoning: parsed_config(INCLUDE_REASONING_CONFIG, "true or false")?

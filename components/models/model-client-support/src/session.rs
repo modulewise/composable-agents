@@ -159,7 +159,15 @@ impl<C: Client> Session<C> {
             CommonConfig::load(C::DEFAULT_BASE_URL, C::PATH).map_err(SessionError::Config)?;
         let config = C::config().map_err(SessionError::Config)?;
         let names = ToolNames::new(&settings).map_err(SessionError::Settings)?;
-        let settings = sent_settings(&settings);
+        let mut settings = sent_settings(&settings);
+        // Each sampling setting is the caller's, else the configured one.
+        settings.temperature = settings.temperature.or(common.temperature);
+        settings.top_p = settings.top_p.or(common.top_p);
+        settings.top_k = settings.top_k.or(common.top_k);
+        settings.seed = settings.seed.or(common.seed);
+        settings.stop_sequences = settings
+            .stop_sequences
+            .or_else(|| common.stop_sequences.clone());
         let state = C::start(&settings, &sent_history(history))?;
         Ok(Session {
             settings,
