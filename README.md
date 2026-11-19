@@ -57,6 +57,7 @@ instructions = "Answer in one or two sentences."
 | `description` | yes | the agent's description, in its metadata |
 | `version` | yes | the agent's version, in its metadata |
 | `instructions` | no | the model's system instructions |
+| `report-reasoning` | no | `true` to emit the model's reasoning in status messages (default `false`). It has an effect only when the model returns reasoning, which for `anthropic` requires `include-reasoning` |
 | `toolset` | no | the name of a component exporting `composable:tools/toolset`, such as a `[toolset]` |
 | `max-turns` | no | with a `toolset`: the most model calls allowed per invocation (default 8) |
 | `report-tool-calls` | no | with a `toolset`: `true` to emit the name of each tool called in a status message (default `false`) |

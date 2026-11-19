@@ -23,9 +23,9 @@ use agent_support::types::{
     AgentResponse, AgentResponseStream, TaskState, TaskStatus,
 };
 use agent_support::{
-    Cancel, Events, INSTRUCTIONS_CONFIG, INTERNAL_ERROR, INVALID_PARAMS, ReasoningRun, TaskIds,
-    TextArtifact, agent_message, agent_metadata, get_config, model_input, new_id, reasoning_event,
-    reasoning_runs, response_text, session_error, status_event,
+    Cancel, Events, INSTRUCTIONS_CONFIG, INTERNAL_ERROR, INVALID_PARAMS, REPORT_REASONING_CONFIG,
+    ReasoningRun, TaskIds, TextArtifact, agent_message, agent_metadata, get_config, model_input,
+    new_id, parse_config, response_text, session_error, status_event,
 };
 use composable::models::client::Session;
 
@@ -48,6 +48,11 @@ impl exports::composable::agents::agent::Guest for Component {
                 data: None,
             });
         }
+        let options = Options::from_config().map_err(|message| AgentError {
+            code: INTERNAL_ERROR,
+            message,
+            data: None,
+        })?;
         let settings = ModelSettings {
             instructions: get_config(INSTRUCTIONS_CONFIG),
             tools: None,
@@ -86,20 +91,49 @@ impl exports::composable::agents::agent::Guest for Component {
         };
         let cancel = Cancel::new(cancel);
         spawn_local(async move {
-            let outcome = run(session, input, &ids, Events::new(events_tx), &cancel).await;
+            let outcome = run(
+                session,
+                input,
+                &ids,
+                &options,
+                Events::new(events_tx),
+                &cancel,
+            )
+            .await;
             let _ = outcome_tx.write(Ok(outcome)).await;
         });
         Ok(invocation)
     }
 }
 
+// The agent's config.
+struct Options {
+    // Whether to send the model's reasoning as status messages.
+    report_reasoning: bool,
+}
+
+impl Options {
+    fn from_config() -> Result<Self, String> {
+        Ok(Options {
+            report_reasoning: parse_config(
+                REPORT_REASONING_CONFIG,
+                get_config(REPORT_REASONING_CONFIG),
+                false,
+                "true or false",
+            )?,
+        })
+    }
+}
+
 // Runs the task as one model call. Streams a `working` status, each run of
-// reasoning as a `working` status message, and the text as chunks of one
-// artifact, then returns the outcome. A cancel stops the model call.
+// reasoning as a `working` status message when the agent reports reasoning,
+// and the text as chunks of one artifact, then returns the outcome. A cancel
+// stops the model call.
 async fn run(
     session: Session,
     input: Vec<ModelInputItem>,
     ids: &TaskIds,
+    options: &Options,
     mut events: Events,
     cancel: &Cancel,
 ) -> AgentResponse {
@@ -122,7 +156,7 @@ async fn run(
         Err(e) => return failed(ids, &e.message, artifact, session.exchanges()),
     };
 
-    let mut reasoning = ReasoningRun::default();
+    let mut reasoning = ReasoningRun::new(options.report_reasoning);
     let mut streamed_text = false;
     let mut deltas = stream.deltas.into_stream();
     let canceled = loop {
@@ -175,13 +209,9 @@ async fn run(
     let reason = Some(AgentFinishReason::Model(response.finish_reason));
     // If no reasoning deltas were streamed, send each run of reasoning in the
     // output as a status message, before the text.
-    if !reasoning.streamed {
-        let runs = reasoning_runs(&response.output)
-            .into_iter()
-            .map(|text| reasoning_event(ids, text))
-            .collect();
-        events.send_all(runs).await;
-    }
+    events
+        .send_all(reasoning.unstreamed(ids, &response.output))
+        .await;
     // A response that streamed no text deltas sends its whole text as one
     // chunk.
     if !streamed_text && let Some(event) = artifact.push(response_text(&response.output), ids) {

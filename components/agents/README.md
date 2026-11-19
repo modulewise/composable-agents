@@ -44,12 +44,13 @@ tools. Text and data parts become text input, and files become image, audio,
 video, or document input by media type, which the client may refuse.
 
 The task streams a `working` status, then the model's text as the chunks of one
-artifact, with the last chunk marked. Each run of the model's reasoning, when
-the client returns it, is sent as one `working` status message whose part has
-`{"reasoning": true}` in its metadata. A cancel stops the model call, and the
-task ends `canceled` with the call's exchange. If the call fails, the task
-fails with the error as its status message, and any text already streamed
-remains as its artifact.
+artifact, with the last chunk marked. With `report-reasoning`, each run of the
+model's reasoning, when the client returns it, is sent as one `working` status
+message whose part has `{"reasoning": true}` in its metadata. Without it, the
+reasoning stays in the task's exchanges and is not sent. A cancel stops the
+model call, and the task ends `canceled` with the call's exchange. If the call
+fails, the task fails with the error as its status message, and any text
+already streamed remains as its artifact.
 
 | Key | |
 |---|---|
@@ -57,6 +58,7 @@ remains as its artifact.
 | `description` | required: the agent's description, also used for its one skill |
 | `version` | required: the agent's version in its metadata |
 | `instructions` | optional: the model's instructions (`model-settings.instructions`) |
+| `report-reasoning` | default: `false`; whether to emit the model's reasoning in status messages |
 
 ## tool-calling-agent
 
@@ -90,6 +92,7 @@ tool that didn't run, so every tool call in the history is answered.
 | `version` | required: the agent's version in its metadata |
 | `instructions` | optional: the model's instructions (`model-settings.instructions`) |
 | `max-turns` | default: 8; the most model calls allowed per invocation |
+| `report-reasoning` | default: `false`; whether to emit the model's reasoning in status messages |
 | `report-tool-calls` | default: `false`; whether to emit called tool names in status messages |
 
 ## Interceptors

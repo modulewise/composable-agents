@@ -32,9 +32,8 @@ use agent_support::types::{
 };
 use agent_support::{
     Cancel, Events, INSTRUCTIONS_CONFIG, INTERNAL_ERROR, INVALID_PARAMS, OCTET_STREAM,
-    ReasoningRun, TaskIds, TextArtifact, agent_message, agent_metadata, get_config, model_input,
-    new_id, parse_config, reasoning_event, reasoning_runs, response_text, session_error,
-    status_event,
+    REPORT_REASONING_CONFIG, ReasoningRun, TaskIds, TextArtifact, agent_message, agent_metadata,
+    get_config, model_input, new_id, parse_config, response_text, session_error, status_event,
 };
 use composable::models::client::Session;
 use composable::tools::toolset;
@@ -136,6 +135,8 @@ impl exports::composable::agents::agent::Guest for Component {
 // The agent's config.
 struct Options {
     max_turns: NonZeroU32,
+    // Whether to send the model's reasoning as status messages.
+    report_reasoning: bool,
     // Whether to send a status naming each tool before calling it.
     report_tool_calls: bool,
 }
@@ -148,6 +149,12 @@ impl Options {
                 get_config(MAX_TURNS_CONFIG),
                 DEFAULT_MAX_TURNS,
                 "a whole number greater than 0",
+            )?,
+            report_reasoning: parse_config(
+                REPORT_REASONING_CONFIG,
+                get_config(REPORT_REASONING_CONFIG),
+                false,
+                "true or false",
             )?,
             report_tool_calls: parse_config(
                 REPORT_TOOL_CALLS_CONFIG,
@@ -206,7 +213,7 @@ async fn run(
             }
         };
 
-        let mut reasoning = ReasoningRun::default();
+        let mut reasoning = ReasoningRun::new(options.report_reasoning);
         let mut streamed_text = false;
         let mut deltas = stream.deltas.into_stream();
         let canceled = loop {
@@ -262,13 +269,9 @@ async fn run(
         task.pending_calls = tool_calls(&response.output);
         // If no reasoning deltas were streamed, send each run of reasoning in
         // the output as a status message, before the text.
-        if !reasoning.streamed {
-            let runs = reasoning_runs(&response.output)
-                .into_iter()
-                .map(|text| reasoning_event(ids, text))
-                .collect();
-            events.send_all(runs).await;
-        }
+        events
+            .send_all(reasoning.unstreamed(ids, &response.output))
+            .await;
         // A response that streamed no text deltas sends its whole text as one
         // chunk.
         if !streamed_text

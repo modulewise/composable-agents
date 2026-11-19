@@ -49,4 +49,4 @@ pub use config::{INSTRUCTIONS_CONFIG, get_config, parse_config, required_config}
 pub use error::{INTERNAL_ERROR, INVALID_PARAMS, session_error};
 pub use events::{Events, TaskIds, agent_message, new_id, status_event, text_part};
 pub use input::{OCTET_STREAM, model_input, response_text};
-pub use reasoning::{ReasoningRun, reasoning_event, reasoning_runs};
+pub use reasoning::{REPORT_REASONING_CONFIG, ReasoningRun};

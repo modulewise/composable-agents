@@ -109,6 +109,7 @@ impl ConfigHandler for AgentConfigHandler {
                     "description",
                     "version",
                     "max-turns",
+                    "report-reasoning",
                     "report-tool-calls",
                 ]
                 .as_slice(),
@@ -267,6 +268,9 @@ impl AgentConfigHandler {
         ]);
         if let Some(instructions) = optional_string(&context, "instructions", properties)? {
             config.insert("instructions".to_string(), json!(instructions));
+        }
+        if let Some(report_reasoning) = optional_bool(&context, "report-reasoning", properties)? {
+            config.insert("report-reasoning".to_string(), json!(report_reasoning));
         }
         // `max-turns` and `report-tool-calls` are tool-calling-agent settings,
         // rejected for an agent without a toolset.
@@ -894,6 +898,7 @@ mod tests {
                         "instructions": "Help.",
                         "description": "Helps",
                         "version": "1.0.0",
+                        "report-reasoning": true,
                     }),
                 ))
                 .unwrap(),
@@ -908,6 +913,7 @@ mod tests {
                     "instructions": "Help.",
                     "description": "Helps",
                     "version": "1.0.0",
+                    "report-reasoning": true,
                 },
             })
         );
@@ -932,6 +938,7 @@ mod tests {
                         "description": "Helps",
                         "version": "1.0.0",
                         "max-turns": 4,
+                        "report-reasoning": true,
                         "report-tool-calls": true,
                     }),
                 ))
@@ -947,6 +954,7 @@ mod tests {
                     "description": "Helps",
                     "version": "1.0.0",
                     "max-turns": 4,
+                    "report-reasoning": true,
                     "report-tool-calls": true,
                 },
             })

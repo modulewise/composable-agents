@@ -61,10 +61,12 @@ echo "What is 2+2?" | agents invoke gemma.toml -- assistant
 
 ## Reasoning
 
-`claude.toml` sets `include-reasoning = true`, so each run of the model's
-reasoning, when it thinks, shows on stderr as a `reasoning:` line before the
-reply. Whether the model thinks is its own choice per request, so a simple
-question may show none:
+`claude.toml` sets `include-reasoning = true` on the model, so its responses
+include a summary of its reasoning, and `report-reasoning = true` on the
+agent, so the agent sends that reasoning in status messages. Each run of
+reasoning shows on stderr as a `reasoning:` line before the reply. Whether the
+model thinks is its own choice per request, so a simple question may show
+none:
 
 ```sh
 ./run.sh claude "A train leaves at 9:15am. The trip takes 2 hours 15 minutes. Then it waits 30 minutes. When does it leave the station?"

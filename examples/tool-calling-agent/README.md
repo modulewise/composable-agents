@@ -49,8 +49,9 @@ The config is split across files, which the CLI combines:
 The script lists the agent's metadata, then invokes it with the question
 (`gemma` and "What is 17 times 23, minus 5?" by default). `agent.toml` sets
 `report-tool-calls = true`, so each tool call shows on stderr as a status
-message. The answer streams to stdout, and the task's status, finish reason,
-and usage go to stderr:
+message, and `report-reasoning = true`, so any reasoning the model returns
+shows as a `reasoning:` line. The answer streams to stdout, and the task's
+status, finish reason, and usage go to stderr:
 
 ```
 status: working
