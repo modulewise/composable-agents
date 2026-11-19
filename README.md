@@ -38,7 +38,7 @@ name = "gpt-oss:20b"
 | `seed` | no | `ollama` and `openai` only: the default sampling seed, overridden by the agent's settings |
 | `stop-sequences` | no | a list of strings that each end the model's output, as the default, overridden by the agent's settings |
 | `effort` | no | how much effort the model uses on a response. For `anthropic`, one of `low`, `medium`, `high`, `xhigh` or `max`. For `ollama` and `openai`, sent as `reasoning_effort` unchanged, with values that depend on the provider and model |
-| `include-reasoning` | no | `anthropic` only: `true` to include a summary of the model's reasoning in the response (default `false`) |
+| `include-reasoning` | no | `anthropic` and `ollama` only: `true` to include the model's reasoning text in the response (default `false`). For `anthropic` it is a summary. `openai` is not supported, since it includes none when called via the Chat Completions API |
 | `max-retries` | no | `anthropic` only: how many times a request may be resent after failure (default 2) |
 
 ### `[agent]`
@@ -57,6 +57,7 @@ instructions = "Answer in one or two sentences."
 | `description` | yes | the agent's description, in its metadata |
 | `version` | yes | the agent's version, in its metadata |
 | `instructions` | no | the model's system instructions |
+| `report-reasoning` | no | `true` to emit the model's reasoning in status messages (default `false`). It has an effect only when the agent's model has `include-reasoning` |
 | `toolset` | no | the name of a component exporting `composable:tools/toolset`, such as a `[toolset]` |
 | `max-turns` | no | with a `toolset`: the most model calls allowed per invocation (default 8) |
 | `report-tool-calls` | no | with a `toolset`: `true` to emit the name of each tool called in a status message (default `false`) |

@@ -6,7 +6,7 @@ use std::convert::Infallible;
 use model_client_support::sse;
 use model_client_support::types::{
     ContentDelta, ContentSource, ModelDelta, ModelError, ModelExchange, ModelFinishReason,
-    ModelInputItem, ModelOutputItem, ModelResponse, ModelSettings, RequestParameters,
+    ModelInputItem, ModelOutputItem, ModelResponse, ModelSettings, Reasoning, RequestParameters,
     ResultContent, TokenUsage, ToolCall, ToolCallDelta, ToolChoice, ToolDefinition,
 };
 use model_client_support::{
@@ -509,6 +509,10 @@ struct ChunkChoice {
 struct ChunkDelta {
     #[serde(default)]
     content: Option<String>,
+    // The model's reasoning text. OpenAI includes none when called via the
+    // Chat Completions API. Ollama sends it for a model that thinks.
+    #[serde(default)]
+    reasoning: Option<String>,
     #[serde(default)]
     refusal: Option<String>,
     #[serde(default)]
@@ -566,6 +570,8 @@ struct CompletionTokensDetails {
 struct Accumulator {
     response_id: Option<String>,
     model: Option<String>,
+    // Empty unless the client includes reasoning.
+    reasoning: String,
     text: String,
     refusal: String,
     /// Tool calls accumulated by stream index.
@@ -587,10 +593,12 @@ struct AccTool {
 const DONE: &str = "[DONE]";
 
 /// Reads the SSE body, writing deltas to `deltas`, and returns the assembled
-/// response and the assistant message for history. If the caller stops
-/// reading the deltas, it fails and drops the body, closing the connection.
+/// response and the assistant message for history. Reasoning text is read
+/// only with `include_reasoning`. If the caller stops reading the deltas, it
+/// fails and drops the body, closing the connection.
 pub(crate) async fn stream_response(
     body: StreamReader<u8>,
+    include_reasoning: bool,
     deltas: &mut Deltas,
 ) -> Result<(ModelResponse, Message), ModelError> {
     let mut acc = Accumulator::default();
@@ -601,7 +609,7 @@ pub(crate) async fn stream_response(
         if event.data == DONE {
             continue;
         }
-        apply_chunk(chunk_of(&event.data)?, &mut acc, deltas).await?;
+        apply_chunk(chunk_of(&event.data)?, include_reasoning, &mut acc, deltas).await?;
     }
     complete(acc)
 }
@@ -658,9 +666,11 @@ fn chunk_error(error: &serde_json::Value) -> ModelError {
     }
 }
 
-// Applies one chunk. Fails if the caller stops reading the deltas.
+// Applies one chunk. Its reasoning text is discarded without
+// `include_reasoning`. Fails if the caller stops reading the deltas.
 async fn apply_chunk(
     chunk: Chunk,
+    include_reasoning: bool,
     acc: &mut Accumulator,
     deltas: &mut Deltas,
 ) -> Result<(), ModelError> {
@@ -678,6 +688,15 @@ async fn apply_chunk(
     for choice in chunk.choices {
         if let Some(fr) = choice.finish_reason {
             acc.finish_reason = Some(fr);
+        }
+        if include_reasoning
+            && let Some(reasoning) = choice.delta.reasoning
+            && !reasoning.is_empty()
+        {
+            acc.reasoning.push_str(&reasoning);
+            deltas
+                .write(ModelDelta::Content(ContentDelta::Reasoning(reasoning)))
+                .await?;
         }
         if let Some(content) = choice.delta.content
             && !content.is_empty()
@@ -723,6 +742,13 @@ async fn apply_chunk(
 
 fn assemble(acc: Accumulator) -> (ModelResponse, Message) {
     let mut output = Vec::new();
+    // A message has one reasoning text, which precedes its content.
+    if !acc.reasoning.is_empty() {
+        output.push(ModelOutputItem::Reasoning(Reasoning {
+            text: acc.reasoning,
+            redacted: false,
+        }));
+    }
     if !acc.text.is_empty() {
         output.push(ModelOutputItem::Text(acc.text));
     }
@@ -1099,6 +1125,34 @@ mod tests {
             complete(refused).err().unwrap().message,
             "the model refused: I can't help with that."
         );
+    }
+
+    #[test]
+    fn reasoning_text_precedes_the_content_in_the_output() {
+        let chunk =
+            chunk_of(r#"{"choices": [{"delta": {"reasoning": "Add the numbers."}}]}"#).unwrap();
+        assert_eq!(
+            chunk.choices[0].delta.reasoning.as_deref(),
+            Some("Add the numbers.")
+        );
+
+        let reasoned = Accumulator {
+            reasoning: "Add the numbers.".into(),
+            text: "386".into(),
+            finish_reason: Some("stop".into()),
+            ..Accumulator::default()
+        };
+        let (response, _) = complete(reasoned).unwrap();
+        let [
+            ModelOutputItem::Reasoning(reasoning),
+            ModelOutputItem::Text(text),
+        ] = &response.output[..]
+        else {
+            panic!("expected reasoning, then text");
+        };
+        assert_eq!(reasoning.text, "Add the numbers.");
+        assert!(!reasoning.redacted);
+        assert_eq!(text, "386");
     }
 
     #[test]

@@ -109,6 +109,7 @@ impl ConfigHandler for AgentConfigHandler {
                     "description",
                     "version",
                     "max-turns",
+                    "report-reasoning",
                     "report-tool-calls",
                 ]
                 .as_slice(),
@@ -161,17 +162,17 @@ impl AgentConfigHandler {
         if let Some(effort) = optional_string(&context, "effort", properties)? {
             config.insert("effort".to_string(), json!(effort));
         }
-        // `include-reasoning` and `max-retries` are Messages API client
-        // settings, rejected for other providers.
-        let messages_api = uri == ANTHROPIC_MESSAGES_CLIENT;
+        // Every client reads `include-reasoning`. It is rejected for `openai`,
+        // whose Chat Completions API returns no reasoning text.
         if let Some(include_reasoning) = optional_bool(&context, "include-reasoning", properties)? {
-            if !messages_api {
-                bail!(
-                    "{context}: 'include-reasoning' is only supported for provider 'anthropic', not '{provider}'"
-                );
+            if provider == "openai" {
+                bail!("{context}: 'include-reasoning' is not supported for provider '{provider}'");
             }
             config.insert("include-reasoning".to_string(), json!(include_reasoning));
         }
+        // `max-retries` is a Messages API client setting, rejected for other
+        // providers.
+        let messages_api = uri == ANTHROPIC_MESSAGES_CLIENT;
         if let Some(max_retries) = optional_u32(&context, "max-retries", properties)? {
             if !messages_api {
                 bail!(
@@ -267,6 +268,9 @@ impl AgentConfigHandler {
         ]);
         if let Some(instructions) = optional_string(&context, "instructions", properties)? {
             config.insert("instructions".to_string(), json!(instructions));
+        }
+        if let Some(report_reasoning) = optional_bool(&context, "report-reasoning", properties)? {
+            config.insert("report-reasoning".to_string(), json!(report_reasoning));
         }
         // `max-turns` and `report-tool-calls` are tool-calling-agent settings,
         // rejected for an agent without a toolset.
@@ -767,28 +771,56 @@ mod tests {
     }
 
     #[test]
-    fn messages_api_settings_are_rejected_for_a_model_without_that_client() {
-        for property in ["include-reasoning", "max-retries"] {
-            for provider in ["ollama", "openai"] {
-                let value = match property {
-                    "include-reasoning" => json!(true),
-                    _ => json!(3),
-                };
-                let mut properties = json!({ "provider": provider, "name": "m" });
-                properties[property] = value;
-                let mut handler = AgentConfigHandler::default();
-                let error = handler
-                    .handle_definition(definition("model", "other", properties))
-                    .unwrap_err()
-                    .to_string();
-                assert!(
-                    error.contains(&format!(
-                        "'{property}' is only supported for provider 'anthropic', not '{provider}'"
-                    )),
-                    "{error}"
-                );
-            }
+    fn max_retries_is_rejected_for_a_model_without_the_messages_api_client() {
+        for provider in ["ollama", "openai"] {
+            let mut handler = AgentConfigHandler::default();
+            let error = handler
+                .handle_definition(definition(
+                    "model",
+                    "other",
+                    json!({ "provider": provider, "name": "m", "max-retries": 3 }),
+                ))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(&format!(
+                    "'max-retries' is only supported for provider 'anthropic', not '{provider}'"
+                )),
+                "{error}"
+            );
         }
+    }
+
+    #[test]
+    fn include_reasoning_is_passed_to_an_ollama_model_and_rejected_for_openai() {
+        let mut handler = AgentConfigHandler::default();
+        let produced = produced(
+            handler
+                .handle_definition(definition(
+                    "model",
+                    "local",
+                    json!({ "provider": "ollama", "name": "m", "include-reasoning": true }),
+                ))
+                .unwrap(),
+        );
+        assert_eq!(
+            produced[&key("component", "local")]["config"]["include-reasoning"],
+            json!(true)
+        );
+
+        let mut handler = AgentConfigHandler::default();
+        let error = handler
+            .handle_definition(definition(
+                "model",
+                "other",
+                json!({ "provider": "openai", "name": "m", "include-reasoning": true }),
+            ))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("'include-reasoning' is not supported for provider 'openai'"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -894,6 +926,7 @@ mod tests {
                         "instructions": "Help.",
                         "description": "Helps",
                         "version": "1.0.0",
+                        "report-reasoning": true,
                     }),
                 ))
                 .unwrap(),
@@ -908,6 +941,7 @@ mod tests {
                     "instructions": "Help.",
                     "description": "Helps",
                     "version": "1.0.0",
+                    "report-reasoning": true,
                 },
             })
         );
@@ -932,6 +966,7 @@ mod tests {
                         "description": "Helps",
                         "version": "1.0.0",
                         "max-turns": 4,
+                        "report-reasoning": true,
                         "report-tool-calls": true,
                     }),
                 ))
@@ -947,6 +982,7 @@ mod tests {
                     "description": "Helps",
                     "version": "1.0.0",
                     "max-turns": 4,
+                    "report-reasoning": true,
                     "report-tool-calls": true,
                 },
             })

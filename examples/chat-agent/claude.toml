@@ -9,3 +9,4 @@ model = "claude"
 description = "Answers questions concisely"
 version = "0.1.0"
 instructions = "Answer in one or two sentences."
+report-reasoning = true

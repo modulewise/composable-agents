@@ -503,14 +503,14 @@ mod tests {
 
     #[test]
     fn a_status_message_marked_as_reasoning_is_shown_as_reasoning() {
-        let mut working = status(TaskState::Working, Some("Add them.\n\n"));
+        let mut working = status(TaskState::Working, Some("Add the numbers.\n\n"));
         working.message.as_mut().unwrap().parts[0].metadata =
             Some(r#"{"reasoning":true}"#.to_string());
-        assert_eq!(status_line(&working), "reasoning: Add them.");
+        assert_eq!(status_line(&working), "reasoning: Add the numbers.");
 
         working.message.as_mut().unwrap().parts[0].metadata =
             Some(r#"{"reasoning":false}"#.to_string());
-        assert_eq!(status_line(&working), "status: working: Add them.");
+        assert_eq!(status_line(&working), "status: working: Add the numbers.");
     }
 
     #[test]

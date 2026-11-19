@@ -26,16 +26,16 @@ use model_client_support::{
 use wit_bindgen::rt::async_support::{FutureReader, FutureWriter, StreamReader, StreamWriter};
 
 const EFFORT_CONFIG: &str = "effort";
+const INCLUDE_REASONING_CONFIG: &str = "include-reasoning";
 const MAX_TOKENS_FIELD_CONFIG: &str = "max-tokens-field";
 
 /// A client of the Chat Completions API. It keeps the conversation history in
 /// Chat Completions form and sends it with each call.
-struct ChatCompletionsClient;
-
-/// The client's own config.
-struct ChatCompletionsConfig {
+struct ChatCompletionsClient {
     // Sent as `reasoning_effort`, as configured.
     effort: Option<String>,
+    // Whether a response includes the reasoning text a provider sends.
+    include_reasoning: bool,
     max_tokens_field: mapping::MaxTokensField,
 }
 
@@ -46,7 +46,6 @@ struct ChatState {
 }
 
 impl Client for ChatCompletionsClient {
-    type Config = ChatCompletionsConfig;
     type State = ChatState;
     // The assistant message.
     type Output = mapping::Message;
@@ -55,11 +54,13 @@ impl Client for ChatCompletionsClient {
     const DEFAULT_BASE_URL: &'static str = "https://api.openai.com/v1";
     const PATH: &'static str = "/chat/completions";
 
-    fn config() -> Result<ChatCompletionsConfig, ModelError> {
+    fn new() -> Result<Self, ModelError> {
         // The API has no `top_k`.
         reject_config(&[TOP_K_CONFIG], Self::API)?;
-        Ok(ChatCompletionsConfig {
+        Ok(ChatCompletionsClient {
             effort: get_config(EFFORT_CONFIG),
+            include_reasoning: parsed_config(INCLUDE_REASONING_CONFIG, "true or false")?
+                .unwrap_or(false),
             max_tokens_field: parsed_config(
                 MAX_TOKENS_FIELD_CONFIG,
                 mapping::MAX_TOKENS_FIELD_VALUES,
@@ -95,36 +96,33 @@ impl Client for ChatCompletionsClient {
     }
 
     fn request(
+        &self,
         model: &str,
         state: &ChatState,
-        config: &ChatCompletionsConfig,
         max_tokens: Option<u32>,
     ) -> Result<Vec<u8>, ModelError> {
         mapping::build_request(
             model,
             &state.messages,
             &state.api_settings,
-            config.effort.as_deref(),
-            config.max_tokens_field,
+            self.effort.as_deref(),
+            self.max_tokens_field,
             max_tokens,
         )
     }
 
-    fn parameters(
-        state: &ChatState,
-        config: &ChatCompletionsConfig,
-        max_tokens: Option<u32>,
-    ) -> RequestParameters {
+    fn parameters(&self, state: &ChatState, max_tokens: Option<u32>) -> RequestParameters {
         state
             .api_settings
-            .parameters(config.effort.as_deref(), max_tokens)
+            .parameters(self.effort.as_deref(), max_tokens)
     }
 
     async fn read_response(
+        &self,
         body: StreamReader<u8>,
         deltas: &mut Deltas,
     ) -> Result<(ModelResponse, mapping::Message), ModelError> {
-        mapping::stream_response(body, deltas).await
+        mapping::stream_response(body, self.include_reasoning, deltas).await
     }
 
     fn add_output(state: &mut ChatState, output: mapping::Message) {
