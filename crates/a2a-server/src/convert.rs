@@ -70,13 +70,41 @@ pub(crate) fn a2a_event(event: agent::AgentEvent) -> Result<a2a::StreamResponse,
     })
 }
 
-/// A status from the agent. A status without a timestamp is given the
-/// current time.
+/// `status` with the current time as its timestamp, unless the agent set
+/// one. Applied when the server receives a status, before it is stored.
+pub(crate) fn timestamped(status: agent::TaskStatus) -> agent::TaskStatus {
+    agent::TaskStatus {
+        timestamp: status.timestamp.or_else(|| Some(now())),
+        ..status
+    }
+}
+
+/// A status from the agent.
 pub(crate) fn a2a_status(status: agent::TaskStatus) -> Result<a2a::TaskStatus, String> {
     Ok(a2a::TaskStatus {
         state: a2a_state(status.state),
         message: status.message.map(a2a_message).transpose()?,
-        timestamp: Some(status.timestamp.unwrap_or_else(now)),
+        timestamp: status.timestamp,
+    })
+}
+
+/// A task, as the server stores it.
+pub(crate) fn a2a_task(task: agent::Task) -> Result<a2a::Task, String> {
+    Ok(a2a::Task {
+        id: task.id,
+        context_id: task.context_id,
+        status: a2a_status(task.status)?,
+        artifacts: task
+            .artifacts
+            .into_iter()
+            .map(a2a_artifact)
+            .collect::<Result<_, _>>()?,
+        history: task
+            .history
+            .into_iter()
+            .map(a2a_message)
+            .collect::<Result<_, _>>()?,
+        metadata: json_object(task.metadata, "a task")?,
     })
 }
 
@@ -250,21 +278,71 @@ mod tests {
     }
 
     #[test]
-    fn a_status_from_the_agent_is_given_a_timestamp_and_keeps_its_message() {
+    fn a_status_without_a_timestamp_is_given_the_current_time() {
+        let status = timestamped(agent::TaskStatus {
+            state: agent::TaskState::Working,
+            message: None,
+            timestamp: None,
+        });
+        let timestamp = status.timestamp.unwrap();
+        assert!(
+            OffsetDateTime::parse(&timestamp, &Rfc3339).is_ok(),
+            "{timestamp}"
+        );
+
+        let status = timestamped(agent::TaskStatus {
+            state: agent::TaskState::Working,
+            message: None,
+            timestamp: Some("2026-11-19T10:00:00Z".to_string()),
+        });
+        assert_eq!(status.timestamp.as_deref(), Some("2026-11-19T10:00:00Z"));
+    }
+
+    #[test]
+    fn a_task_is_converted_with_its_status_artifacts_and_history() {
+        let task = agent::Task {
+            id: "t1".to_string(),
+            context_id: Some("c1".to_string()),
+            status: agent::TaskStatus {
+                state: agent::TaskState::Completed,
+                message: None,
+                timestamp: Some("2026-11-19T10:00:00Z".to_string()),
+            },
+            artifacts: vec![artifact(vec![text_part("42", None)])],
+            history: vec![message_from_agent(vec![text_part("Working on it.", None)])],
+            metadata: Some(r#"{"k":"v"}"#.to_string()),
+        };
+        assert_eq!(
+            json!(a2a_task(task).unwrap()),
+            json!({
+                "id": "t1",
+                "contextId": "c1",
+                "status": { "state": "TASK_STATE_COMPLETED", "timestamp": "2026-11-19T10:00:00Z" },
+                "artifacts": [{ "artifactId": "a1", "parts": [{ "text": "42" }] }],
+                "history": [{
+                    "messageId": "m2",
+                    "contextId": "c1",
+                    "taskId": "t1",
+                    "role": "ROLE_AGENT",
+                    "parts": [{ "text": "Working on it." }],
+                }],
+                "metadata": { "k": "v" },
+            })
+        );
+    }
+
+    #[test]
+    fn a_status_from_the_agent_keeps_its_message_and_timestamp() {
         let reasoning = text_part("Add the numbers.", Some(r#"{"reasoning":true}"#));
         let status = a2a_status(agent::TaskStatus {
             state: agent::TaskState::Working,
             message: Some(message_from_agent(vec![reasoning])),
-            timestamp: None,
+            timestamp: Some("2026-11-19T10:00:00Z".to_string()),
         })
         .unwrap();
 
         assert_eq!(status.state, a2a::TaskState::Working);
-        let timestamp = status.timestamp.unwrap();
-        assert!(
-            timestamp.ends_with('Z') && timestamp.contains('T'),
-            "{timestamp}"
-        );
+        assert_eq!(status.timestamp.as_deref(), Some("2026-11-19T10:00:00Z"));
         // A part's metadata is kept, so a client can recognize reasoning.
         assert_eq!(
             json!(status.message.unwrap()),
@@ -276,17 +354,6 @@ mod tests {
                 "parts": [{ "text": "Add the numbers.", "metadata": { "reasoning": true } }],
             })
         );
-    }
-
-    #[test]
-    fn a_status_keeps_the_timestamp_of_the_agent() {
-        let status = a2a_status(agent::TaskStatus {
-            state: agent::TaskState::Completed,
-            message: None,
-            timestamp: Some("2026-11-19T10:00:00Z".to_string()),
-        })
-        .unwrap();
-        assert_eq!(status.timestamp.as_deref(), Some("2026-11-19T10:00:00Z"));
     }
 
     #[test]

@@ -7,4 +7,7 @@ edition.workspace = true
 a2a-json = { path = "../a2a-json" }
 composable-agents = { path = "../.." }
 serde_json.workspace = true
-time = { version = "0.3", default-features = false, features = ["std", "formatting"] }
+time = { version = "0.3", default-features = false, features = ["std", "formatting", "parsing"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
