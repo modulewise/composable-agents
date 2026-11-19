@@ -1,10 +1,8 @@
-//! A2A's JSON, read into the WIT types and written from them. The JSON is
-//! ProtoJSON, in which field names are camelCase and an enum value is its proto
-//! name (e.g. `TASK_STATE_WORKING`). A value the WIT holds as `json` is JSON
-//! text.
+//! A2A's JSON, read into the WIT types and written from them, through the
+//! `a2a-json` types. A value the WIT holds as `json` is JSON text.
 
 use serde::de::DeserializeOwned;
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 use crate::composable::a2a::types::{
     AgentCapabilities, AgentCard, AgentCardSignature, AgentInterface, ApiKeySecurityScheme,
@@ -19,7 +17,7 @@ use crate::composable::agents::types::{
 };
 use crate::exports::composable::a2a::client::{
     CancelTaskRequest, Error, GetTaskRequest, ListTasksRequest, ListTasksResponse,
-    SendMessageRequest, SendMessageResponse,
+    SendMessageConfiguration, SendMessageRequest, SendMessageResponse,
 };
 
 /// The JSON-RPC binding, as specified by an agent card.
@@ -27,9 +25,9 @@ const JSONRPC: &str = "JSONRPC";
 
 /// The agent card in `bytes`. Fails when a required field is missing.
 pub(crate) fn agent_card(bytes: &[u8]) -> Result<AgentCard, String> {
-    let card: wire::AgentCard =
+    let card: Value =
         serde_json::from_slice(bytes).map_err(|e| format!("the agent's card is not valid: {e}"))?;
-    card.try_into()
+    parsed::<a2a_json::AgentCard>(card, "card").map(Into::into)
 }
 
 /// The first of the card's interfaces that uses JSON-RPC and A2A `version`.
@@ -93,37 +91,39 @@ fn rpc_error(error: &Value) -> Error {
 
 /// A `Task` result.
 pub(crate) fn task(result: Value) -> Result<Task, String> {
-    parsed::<wire::Task>(result, "task")?.try_into()
+    parsed::<a2a_json::Task>(result, "task").map(Into::into)
 }
 
 /// A `SendMessageResponse` result.
 pub(crate) fn send_message_response(result: Value) -> Result<SendMessageResponse, String> {
-    match stream_response(result)? {
-        StreamResponse::Task(task) => Ok(SendMessageResponse::Task(task)),
-        StreamResponse::Message(message) => Ok(SendMessageResponse::Message(message)),
-        StreamResponse::StatusUpdate(_) | StreamResponse::ArtifactUpdate(_) => {
-            Err("the agent's response is neither a task nor a message".to_string())
-        }
-    }
+    Ok(
+        match parsed::<a2a_json::SendMessageResponse>(result, "response")? {
+            a2a_json::SendMessageResponse::Task(task) => SendMessageResponse::Task(task.into()),
+            a2a_json::SendMessageResponse::Message(message) => {
+                SendMessageResponse::Message(message.into())
+            }
+        },
+    )
 }
 
 /// A `StreamResponse` result.
 pub(crate) fn stream_response(result: Value) -> Result<StreamResponse, String> {
-    parsed::<wire::StreamResponse>(result, "response")?.try_into()
+    parsed::<a2a_json::StreamResponse>(result, "response").map(Into::into)
 }
 
-/// A `ListTasksResponse` result.
+/// A `ListTasksResponse` result. Fails on a negative page size or total.
 pub(crate) fn list_tasks_response(result: Value) -> Result<ListTasksResponse, String> {
-    let response: wire::ListTasksResponse = parsed(result, "list of tasks")?;
+    const NAME: &str = "list of tasks";
+    let response: a2a_json::ListTasksResponse = parsed(result, NAME)?;
+    let count = |value: i32, field: &str| {
+        u32::try_from(value)
+            .map_err(|_| format!("the agent's {NAME} is not valid: {field} is negative"))
+    };
     Ok(ListTasksResponse {
-        tasks: response
-            .tasks
-            .into_iter()
-            .map(Task::try_from)
-            .collect::<Result<_, _>>()?,
+        tasks: response.tasks.into_iter().map(Into::into).collect(),
         next_page_token: response.next_page_token,
-        page_size: response.page_size,
-        total_size: response.total_size,
+        page_size: count(response.page_size, "pageSize")?,
+        total_size: count(response.total_size, "totalSize")?,
     })
 }
 
@@ -133,364 +133,279 @@ fn parsed<T: DeserializeOwned>(value: Value, name: &str) -> Result<T, String> {
 }
 
 /// The params of `SendMessage` and `SendStreamingMessage`. Fails on a message
-/// with no id, or on a `json` value that isn't JSON.
+/// with no id, on a `json` value that isn't JSON, or on a history length the
+/// protocol can't hold.
 pub(crate) fn send_message_params(
     request: &SendMessageRequest,
     tenant: Option<&str>,
 ) -> Result<Value, String> {
-    let mut params = with_tenant(tenant);
-    params.insert("message".into(), message_json(&request.message)?);
-    if let Some(configuration) = &request.configuration {
-        let mut fields = Map::new();
-        if !configuration.accepted_output_modes.is_empty() {
-            fields.insert(
-                "acceptedOutputModes".into(),
-                json!(configuration.accepted_output_modes),
-            );
-        }
-        if let Some(history_length) = configuration.history_length {
-            fields.insert("historyLength".into(), json!(history_length));
-        }
-        if configuration.return_immediately {
-            fields.insert("returnImmediately".into(), json!(true));
-        }
-        params.insert("configuration".into(), Value::Object(fields));
-    }
-    insert_json(&mut params, "metadata", request.metadata.as_deref())?;
-    Ok(Value::Object(params))
+    Ok(json!(a2a_json::SendMessageRequest {
+        tenant: tenant.map(str::to_string),
+        message: message(&request.message)?,
+        configuration: request
+            .configuration
+            .as_ref()
+            .map(configuration)
+            .transpose()?,
+        metadata: json_object("metadata", request.metadata.as_deref())?,
+    }))
 }
 
-/// The params of `GetTask`.
-pub(crate) fn get_task_params(request: &GetTaskRequest, tenant: Option<&str>) -> Value {
-    let mut params = with_tenant(tenant);
-    params.insert("id".into(), json!(request.id));
-    if let Some(history_length) = request.history_length {
-        params.insert("historyLength".into(), json!(history_length));
-    }
-    Value::Object(params)
+fn configuration(
+    configuration: &SendMessageConfiguration,
+) -> Result<a2a_json::SendMessageConfiguration, String> {
+    Ok(a2a_json::SendMessageConfiguration {
+        accepted_output_modes: configuration.accepted_output_modes.clone(),
+        task_push_notification_config: None,
+        history_length: int32("history-length", configuration.history_length)?,
+        return_immediately: configuration.return_immediately,
+    })
 }
 
-/// The params of `CancelTask`. Fails on metadata that isn't JSON.
+/// The params of `GetTask`. Fails on a history length the protocol can't
+/// hold.
+pub(crate) fn get_task_params(
+    request: &GetTaskRequest,
+    tenant: Option<&str>,
+) -> Result<Value, String> {
+    Ok(json!(a2a_json::GetTaskRequest {
+        tenant: tenant.map(str::to_string),
+        id: request.id.clone(),
+        history_length: int32("history-length", request.history_length)?,
+    }))
+}
+
+/// The params of `CancelTask`. Fails on metadata that isn't a JSON object.
 pub(crate) fn cancel_task_params(
     request: &CancelTaskRequest,
     tenant: Option<&str>,
 ) -> Result<Value, String> {
-    let mut params = with_tenant(tenant);
-    params.insert("id".into(), json!(request.id));
-    insert_json(&mut params, "metadata", request.metadata.as_deref())?;
-    Ok(Value::Object(params))
+    Ok(json!(a2a_json::CancelTaskRequest {
+        tenant: tenant.map(str::to_string),
+        id: request.id.clone(),
+        metadata: json_object("metadata", request.metadata.as_deref())?,
+    }))
 }
 
-/// The params of `ListTasks`.
-pub(crate) fn list_tasks_params(request: &ListTasksRequest, tenant: Option<&str>) -> Value {
-    let mut params = with_tenant(tenant);
-    if let Some(context_id) = &request.context_id {
-        params.insert("contextId".into(), json!(context_id));
-    }
-    if let Some(status) = request.status {
-        params.insert("status".into(), json!(task_state_name(status)));
-    }
-    if let Some(page_size) = request.page_size {
-        params.insert("pageSize".into(), json!(page_size));
-    }
-    if let Some(page_token) = &request.page_token {
-        params.insert("pageToken".into(), json!(page_token));
-    }
-    if let Some(history_length) = request.history_length {
-        params.insert("historyLength".into(), json!(history_length));
-    }
-    if let Some(timestamp) = &request.status_timestamp_after {
-        params.insert("statusTimestampAfter".into(), json!(timestamp));
-    }
-    if let Some(include_artifacts) = request.include_artifacts {
-        params.insert("includeArtifacts".into(), json!(include_artifacts));
-    }
-    Value::Object(params)
+/// The params of `ListTasks`. Fails on a page size or history length the
+/// protocol can't hold.
+pub(crate) fn list_tasks_params(
+    request: &ListTasksRequest,
+    tenant: Option<&str>,
+) -> Result<Value, String> {
+    Ok(json!(a2a_json::ListTasksRequest {
+        tenant: tenant.map(str::to_string),
+        context_id: request.context_id.clone(),
+        status: request.status.map(task_state),
+        page_size: int32("page-size", request.page_size)?,
+        page_token: request.page_token.clone(),
+        history_length: int32("history-length", request.history_length)?,
+        status_timestamp_after: request.status_timestamp_after.clone(),
+        include_artifacts: request.include_artifacts,
+    }))
 }
 
-// Params with the tenant the selected interface declares, if any.
-fn with_tenant(tenant: Option<&str>) -> Map<String, Value> {
-    let mut params = Map::new();
-    if let Some(tenant) = tenant {
-        params.insert("tenant".into(), json!(tenant));
-    }
-    params
+// `value` as the protocol's `int32`. `name` identifies the value in the error.
+fn int32(name: &str, value: Option<u32>) -> Result<Option<i32>, String> {
+    value
+        .map(|value| i32::try_from(value).map_err(|_| format!("'{name}' is too large")))
+        .transpose()
 }
 
-// Adds `text`, a `json` value, to `fields` as JSON. Fails when it isn't JSON.
-fn insert_json(
-    fields: &mut Map<String, Value>,
-    key: &str,
-    text: Option<&str>,
-) -> Result<(), String> {
-    if let Some(text) = text {
-        let value: Value =
-            serde_json::from_str(text).map_err(|e| format!("'{key}' is not valid JSON: {e}"))?;
-        fields.insert(key.into(), value);
-    }
-    Ok(())
+// `text`, a `json` value, as JSON. `name` identifies the value in the error.
+fn json_value(name: &str, text: &str) -> Result<Value, String> {
+    serde_json::from_str(text).map_err(|e| format!("'{name}' is not valid JSON: {e}"))
 }
 
-fn message_json(message: &Message) -> Result<Value, String> {
+// `text`, a `json` value, as a JSON object. `name` identifies the value in
+// the error.
+fn json_object(name: &str, text: Option<&str>) -> Result<Option<a2a_json::Struct>, String> {
+    text.map(|text| match json_value(name, text)? {
+        Value::Object(object) => Ok(object),
+        _ => Err(format!("'{name}' is not a JSON object")),
+    })
+    .transpose()
+}
+
+fn message(message: &Message) -> Result<a2a_json::Message, String> {
     if message.message_id.is_empty() {
         return Err("the message has no message-id".to_string());
     }
-    let mut fields = Map::new();
-    fields.insert("messageId".into(), json!(message.message_id));
-    if let Some(context_id) = &message.context_id {
-        fields.insert("contextId".into(), json!(context_id));
-    }
-    if let Some(task_id) = &message.task_id {
-        fields.insert("taskId".into(), json!(task_id));
-    }
-    fields.insert("role".into(), json!(role_name(message.role)));
-    let parts = message
-        .parts
-        .iter()
-        .map(part_json)
-        .collect::<Result<Vec<_>, _>>()?;
-    fields.insert("parts".into(), Value::Array(parts));
-    insert_json(&mut fields, "metadata", message.metadata.as_deref())?;
-    if !message.extensions.is_empty() {
-        fields.insert("extensions".into(), json!(message.extensions));
-    }
-    if !message.reference_task_ids.is_empty() {
-        fields.insert("referenceTaskIds".into(), json!(message.reference_task_ids));
-    }
-    Ok(Value::Object(fields))
+    Ok(a2a_json::Message {
+        message_id: message.message_id.clone(),
+        context_id: message.context_id.clone(),
+        task_id: message.task_id.clone(),
+        role: role(message.role),
+        parts: message.parts.iter().map(part).collect::<Result<_, _>>()?,
+        metadata: json_object("metadata", message.metadata.as_deref())?,
+        extensions: message.extensions.clone(),
+        reference_task_ids: message.reference_task_ids.clone(),
+    })
 }
 
-fn part_json(part: &Part) -> Result<Value, String> {
-    let mut fields = Map::new();
-    match &part.content {
-        PartContent::Text(text) => fields.insert("text".into(), json!(text)),
-        PartContent::Raw(raw) => fields.insert("raw".into(), json!(raw)),
-        PartContent::Url(url) => fields.insert("url".into(), json!(url)),
-        PartContent::Data(data) => {
-            insert_json(&mut fields, "data", Some(data))?;
-            None
-        }
-    };
-    insert_json(&mut fields, "metadata", part.metadata.as_deref())?;
-    if let Some(filename) = &part.filename {
-        fields.insert("filename".into(), json!(filename));
-    }
-    if let Some(media_type) = &part.media_type {
-        fields.insert("mediaType".into(), json!(media_type));
-    }
-    Ok(Value::Object(fields))
+fn part(part: &Part) -> Result<a2a_json::Part, String> {
+    Ok(a2a_json::Part {
+        content: match &part.content {
+            PartContent::Text(text) => a2a_json::PartContent::Text(text.clone()),
+            PartContent::Raw(raw) => a2a_json::PartContent::Raw(raw.clone()),
+            PartContent::Url(url) => a2a_json::PartContent::Url(url.clone()),
+            PartContent::Data(data) => a2a_json::PartContent::Data(json_value("data", data)?),
+        },
+        metadata: json_object("metadata", part.metadata.as_deref())?,
+        filename: part.filename.clone(),
+        media_type: part.media_type.clone(),
+    })
 }
 
-fn role_name(role: Role) -> &'static str {
+fn role(role: Role) -> a2a_json::Role {
     match role {
-        Role::Unspecified => "ROLE_UNSPECIFIED",
-        Role::User => "ROLE_USER",
-        Role::Agent => "ROLE_AGENT",
+        Role::Unspecified => a2a_json::Role::Unspecified,
+        Role::User => a2a_json::Role::User,
+        Role::Agent => a2a_json::Role::Agent,
     }
 }
 
-fn task_state_name(state: TaskState) -> &'static str {
+fn task_state(state: TaskState) -> a2a_json::TaskState {
     match state {
-        TaskState::Unspecified => "TASK_STATE_UNSPECIFIED",
-        TaskState::Submitted => "TASK_STATE_SUBMITTED",
-        TaskState::Working => "TASK_STATE_WORKING",
-        TaskState::Completed => "TASK_STATE_COMPLETED",
-        TaskState::Failed => "TASK_STATE_FAILED",
-        TaskState::Canceled => "TASK_STATE_CANCELED",
-        TaskState::InputRequired => "TASK_STATE_INPUT_REQUIRED",
-        TaskState::Rejected => "TASK_STATE_REJECTED",
-        TaskState::AuthRequired => "TASK_STATE_AUTH_REQUIRED",
+        TaskState::Unspecified => a2a_json::TaskState::Unspecified,
+        TaskState::Submitted => a2a_json::TaskState::Submitted,
+        TaskState::Working => a2a_json::TaskState::Working,
+        TaskState::Completed => a2a_json::TaskState::Completed,
+        TaskState::Failed => a2a_json::TaskState::Failed,
+        TaskState::Canceled => a2a_json::TaskState::Canceled,
+        TaskState::InputRequired => a2a_json::TaskState::InputRequired,
+        TaskState::Rejected => a2a_json::TaskState::Rejected,
+        TaskState::AuthRequired => a2a_json::TaskState::AuthRequired,
     }
 }
 
-// JSON text for a `json` field.
-fn json_text(value: Option<Value>) -> Option<String> {
-    value.map(|value| value.to_string())
+// JSON text for a `json` field that holds an object.
+fn json_text(object: Option<a2a_json::Struct>) -> Option<String> {
+    object.map(|object| Value::Object(object).to_string())
 }
 
-// The one value that is set among a `oneof`'s fields. Fails when none or
-// several are. `name` identifies the `oneof` in the error.
-fn one_of<T>(fields: impl IntoIterator<Item = Option<T>>, name: &str) -> Result<T, String> {
-    let mut set = fields.into_iter().flatten();
-    match (set.next(), set.next()) {
-        (Some(value), None) => Ok(value),
-        (None, _) => Err(format!("{name} has none of its possible fields")),
-        (Some(_), Some(_)) => Err(format!("{name} has more than one of its possible fields")),
-    }
-}
-
-impl TryFrom<wire::Part> for Part {
-    type Error = String;
-
-    fn try_from(part: wire::Part) -> Result<Self, String> {
-        let content = one_of(
-            [
-                part.text.map(PartContent::Text),
-                part.raw.map(PartContent::Raw),
-                part.url.map(PartContent::Url),
-                part.data.map(|data| PartContent::Data(data.to_string())),
-            ],
-            "a part",
-        )?;
-        Ok(Part {
-            content,
+impl From<a2a_json::Part> for Part {
+    fn from(part: a2a_json::Part) -> Self {
+        Part {
+            content: match part.content {
+                a2a_json::PartContent::Text(text) => PartContent::Text(text),
+                a2a_json::PartContent::Raw(raw) => PartContent::Raw(raw),
+                a2a_json::PartContent::Url(url) => PartContent::Url(url),
+                a2a_json::PartContent::Data(data) => PartContent::Data(data.to_string()),
+            },
             metadata: json_text(part.metadata),
             filename: part.filename,
             media_type: part.media_type,
-        })
+        }
     }
 }
 
-// `list`, which A2A requires to have at least one element. `name` identifies
-// the list in the error.
-fn non_empty<T>(list: Vec<T>, name: &str) -> Result<Vec<T>, String> {
-    if list.is_empty() {
-        return Err(format!("{name} must have at least one element"));
-    }
-    Ok(list)
-}
-
-// The parts of `owner`, e.g. "a message".
-fn parts(parts: Vec<wire::Part>, owner: &str) -> Result<Vec<Part>, String> {
-    non_empty(parts, &format!("{owner}'s parts"))?
-        .into_iter()
-        .map(Part::try_from)
-        .collect()
-}
-
-impl TryFrom<wire::Message> for Message {
-    type Error = String;
-
-    fn try_from(message: wire::Message) -> Result<Self, String> {
-        Ok(Message {
+impl From<a2a_json::Message> for Message {
+    fn from(message: a2a_json::Message) -> Self {
+        Message {
             message_id: message.message_id,
             context_id: message.context_id,
             task_id: message.task_id,
             role: message.role.into(),
-            parts: parts(message.parts, "a message")?,
+            parts: message.parts.into_iter().map(Into::into).collect(),
             metadata: json_text(message.metadata),
             extensions: message.extensions,
             reference_task_ids: message.reference_task_ids,
-        })
+        }
     }
 }
 
-impl From<wire::Role> for Role {
-    fn from(role: wire::Role) -> Self {
+impl From<a2a_json::Role> for Role {
+    fn from(role: a2a_json::Role) -> Self {
         match role {
-            wire::Role::Unspecified => Role::Unspecified,
-            wire::Role::User => Role::User,
-            wire::Role::Agent => Role::Agent,
+            a2a_json::Role::Unspecified => Role::Unspecified,
+            a2a_json::Role::User => Role::User,
+            a2a_json::Role::Agent => Role::Agent,
         }
     }
 }
 
-impl From<wire::TaskState> for TaskState {
-    fn from(state: wire::TaskState) -> Self {
+impl From<a2a_json::TaskState> for TaskState {
+    fn from(state: a2a_json::TaskState) -> Self {
         match state {
-            wire::TaskState::Unspecified => TaskState::Unspecified,
-            wire::TaskState::Submitted => TaskState::Submitted,
-            wire::TaskState::Working => TaskState::Working,
-            wire::TaskState::Completed => TaskState::Completed,
-            wire::TaskState::Failed => TaskState::Failed,
-            wire::TaskState::Canceled => TaskState::Canceled,
-            wire::TaskState::InputRequired => TaskState::InputRequired,
-            wire::TaskState::Rejected => TaskState::Rejected,
-            wire::TaskState::AuthRequired => TaskState::AuthRequired,
+            a2a_json::TaskState::Unspecified => TaskState::Unspecified,
+            a2a_json::TaskState::Submitted => TaskState::Submitted,
+            a2a_json::TaskState::Working => TaskState::Working,
+            a2a_json::TaskState::Completed => TaskState::Completed,
+            a2a_json::TaskState::Failed => TaskState::Failed,
+            a2a_json::TaskState::Canceled => TaskState::Canceled,
+            a2a_json::TaskState::InputRequired => TaskState::InputRequired,
+            a2a_json::TaskState::Rejected => TaskState::Rejected,
+            a2a_json::TaskState::AuthRequired => TaskState::AuthRequired,
         }
     }
 }
 
-impl TryFrom<wire::TaskStatus> for TaskStatus {
-    type Error = String;
-
-    fn try_from(status: wire::TaskStatus) -> Result<Self, String> {
-        Ok(TaskStatus {
+impl From<a2a_json::TaskStatus> for TaskStatus {
+    fn from(status: a2a_json::TaskStatus) -> Self {
+        TaskStatus {
             state: status.state.into(),
-            message: status.message.map(Message::try_from).transpose()?,
+            message: status.message.map(Into::into),
             timestamp: status.timestamp,
-        })
+        }
     }
 }
 
-impl TryFrom<wire::Artifact> for Artifact {
-    type Error = String;
-
-    fn try_from(artifact: wire::Artifact) -> Result<Self, String> {
-        Ok(Artifact {
+impl From<a2a_json::Artifact> for Artifact {
+    fn from(artifact: a2a_json::Artifact) -> Self {
+        Artifact {
             artifact_id: artifact.artifact_id,
             name: artifact.name,
             description: artifact.description,
-            parts: parts(artifact.parts, "an artifact")?,
+            parts: artifact.parts.into_iter().map(Into::into).collect(),
             metadata: json_text(artifact.metadata),
             extensions: artifact.extensions,
-        })
+        }
     }
 }
 
-impl TryFrom<wire::Task> for Task {
-    type Error = String;
-
-    fn try_from(task: wire::Task) -> Result<Self, String> {
-        Ok(Task {
+impl From<a2a_json::Task> for Task {
+    fn from(task: a2a_json::Task) -> Self {
+        Task {
             id: task.id,
             context_id: task.context_id,
-            status: task.status.try_into()?,
-            artifacts: task
-                .artifacts
-                .into_iter()
-                .map(Artifact::try_from)
-                .collect::<Result<_, _>>()?,
-            history: task
-                .history
-                .into_iter()
-                .map(Message::try_from)
-                .collect::<Result<_, _>>()?,
+            status: task.status.into(),
+            artifacts: task.artifacts.into_iter().map(Into::into).collect(),
+            history: task.history.into_iter().map(Into::into).collect(),
             metadata: json_text(task.metadata),
-        })
+        }
     }
 }
 
-impl TryFrom<wire::StreamResponse> for StreamResponse {
-    type Error = String;
-
-    fn try_from(response: wire::StreamResponse) -> Result<Self, String> {
-        let response = one_of(
-            [
-                response.task.map(wire::Payload::Task),
-                response.message.map(wire::Payload::Message),
-                response.status_update.map(wire::Payload::StatusUpdate),
-                response.artifact_update.map(wire::Payload::ArtifactUpdate),
-            ],
-            "a response",
-        )?;
-        Ok(match response {
-            wire::Payload::Task(task) => StreamResponse::Task(task.try_into()?),
-            wire::Payload::Message(message) => StreamResponse::Message(message.try_into()?),
-            wire::Payload::StatusUpdate(update) => {
+impl From<a2a_json::StreamResponse> for StreamResponse {
+    fn from(response: a2a_json::StreamResponse) -> Self {
+        match response {
+            a2a_json::StreamResponse::Task(task) => StreamResponse::Task(task.into()),
+            a2a_json::StreamResponse::Message(message) => StreamResponse::Message(message.into()),
+            a2a_json::StreamResponse::StatusUpdate(update) => {
                 StreamResponse::StatusUpdate(TaskStatusUpdateEvent {
                     task_id: update.task_id,
                     context_id: update.context_id,
-                    status: update.status.try_into()?,
+                    status: update.status.into(),
                     metadata: json_text(update.metadata),
                 })
             }
-            wire::Payload::ArtifactUpdate(update) => {
+            a2a_json::StreamResponse::ArtifactUpdate(update) => {
                 StreamResponse::ArtifactUpdate(TaskArtifactUpdateEvent {
                     task_id: update.task_id,
                     context_id: update.context_id,
-                    artifact: update.artifact.try_into()?,
+                    artifact: update.artifact.into(),
                     append: update.append,
                     last_chunk: update.last_chunk,
                     metadata: json_text(update.metadata),
                 })
             }
-        })
+        }
     }
 }
 
-impl From<wire::SecurityRequirement> for SecurityRequirement {
-    fn from(requirement: wire::SecurityRequirement) -> Self {
+impl From<a2a_json::SecurityRequirement> for SecurityRequirement {
+    fn from(requirement: a2a_json::SecurityRequirement) -> Self {
         SecurityRequirement {
             schemes: requirement
                 .schemes
@@ -501,112 +416,92 @@ impl From<wire::SecurityRequirement> for SecurityRequirement {
     }
 }
 
-fn security_requirements(requirements: Vec<wire::SecurityRequirement>) -> Vec<SecurityRequirement> {
+fn security_requirements(
+    requirements: Vec<a2a_json::SecurityRequirement>,
+) -> Vec<SecurityRequirement> {
     requirements.into_iter().map(Into::into).collect()
 }
 
-impl TryFrom<wire::SecurityScheme> for SecurityScheme {
-    type Error = String;
-
-    fn try_from(scheme: wire::SecurityScheme) -> Result<Self, String> {
-        one_of(
-            [
-                scheme.api_key_security_scheme.map(|scheme| {
-                    Ok(SecurityScheme::ApiKeySecurityScheme(ApiKeySecurityScheme {
-                        description: scheme.description,
-                        location: scheme.location,
-                        name: scheme.name,
-                    }))
-                }),
-                scheme.http_auth_security_scheme.map(|scheme| {
-                    Ok(SecurityScheme::HttpAuthSecurityScheme(
-                        HttpAuthSecurityScheme {
-                            description: scheme.description,
-                            scheme: scheme.scheme,
-                            bearer_format: scheme.bearer_format,
-                        },
-                    ))
-                }),
-                scheme.oauth2_security_scheme.map(|scheme| {
-                    Ok(SecurityScheme::Oauth2SecurityScheme(Oauth2SecurityScheme {
-                        description: scheme.description,
-                        flows: scheme.flows.try_into()?,
-                        oauth2_metadata_url: scheme.oauth2_metadata_url,
-                    }))
-                }),
-                scheme.open_id_connect_security_scheme.map(|scheme| {
-                    Ok(SecurityScheme::OpenIdConnectSecurityScheme(
-                        OpenIdConnectSecurityScheme {
-                            description: scheme.description,
-                            open_id_connect_url: scheme.open_id_connect_url,
-                        },
-                    ))
-                }),
-                scheme.mtls_security_scheme.map(|scheme| {
-                    Ok(SecurityScheme::MtlsSecurityScheme(
-                        MutualTlsSecurityScheme {
-                            description: scheme.description,
-                        },
-                    ))
-                }),
-            ],
-            "a security scheme",
-        )?
+impl From<a2a_json::SecurityScheme> for SecurityScheme {
+    fn from(scheme: a2a_json::SecurityScheme) -> Self {
+        match scheme {
+            a2a_json::SecurityScheme::ApiKey(scheme) => {
+                SecurityScheme::ApiKeySecurityScheme(ApiKeySecurityScheme {
+                    description: scheme.description,
+                    location: scheme.location,
+                    name: scheme.name,
+                })
+            }
+            a2a_json::SecurityScheme::HttpAuth(scheme) => {
+                SecurityScheme::HttpAuthSecurityScheme(HttpAuthSecurityScheme {
+                    description: scheme.description,
+                    scheme: scheme.scheme,
+                    bearer_format: scheme.bearer_format,
+                })
+            }
+            a2a_json::SecurityScheme::Oauth2(scheme) => {
+                SecurityScheme::Oauth2SecurityScheme(Oauth2SecurityScheme {
+                    description: scheme.description,
+                    flows: scheme.flows.into(),
+                    oauth2_metadata_url: scheme.oauth2_metadata_url,
+                })
+            }
+            a2a_json::SecurityScheme::OpenIdConnect(scheme) => {
+                SecurityScheme::OpenIdConnectSecurityScheme(OpenIdConnectSecurityScheme {
+                    description: scheme.description,
+                    open_id_connect_url: scheme.open_id_connect_url,
+                })
+            }
+            a2a_json::SecurityScheme::MutualTls(scheme) => {
+                SecurityScheme::MtlsSecurityScheme(MutualTlsSecurityScheme {
+                    description: scheme.description,
+                })
+            }
+        }
     }
 }
 
-impl TryFrom<wire::OauthFlows> for OauthFlows {
-    type Error = String;
-
-    fn try_from(flows: wire::OauthFlows) -> Result<Self, String> {
-        one_of(
-            [
-                flows.authorization_code.map(|flow| {
-                    OauthFlows::AuthorizationCode(AuthorizationCodeOauthFlow {
-                        authorization_url: flow.authorization_url,
-                        token_url: flow.token_url,
-                        refresh_url: flow.refresh_url,
-                        scopes: flow.scopes.into_iter().collect(),
-                        pkce_required: flow.pkce_required,
-                    })
-                }),
-                flows.client_credentials.map(|flow| {
-                    OauthFlows::ClientCredentials(ClientCredentialsOauthFlow {
-                        token_url: flow.token_url,
-                        refresh_url: flow.refresh_url,
-                        scopes: flow.scopes.into_iter().collect(),
-                    })
-                }),
-                flows.implicit.map(|flow| {
-                    OauthFlows::Implicit(ImplicitOauthFlow {
-                        authorization_url: flow.authorization_url,
-                        refresh_url: flow.refresh_url,
-                        scopes: flow.scopes.into_iter().collect(),
-                    })
-                }),
-                flows.password.map(|flow| {
-                    OauthFlows::Password(PasswordOauthFlow {
-                        token_url: flow.token_url,
-                        refresh_url: flow.refresh_url,
-                        scopes: flow.scopes.into_iter().collect(),
-                    })
-                }),
-                flows.device_code.map(|flow| {
-                    OauthFlows::DeviceCode(DeviceCodeOauthFlow {
-                        device_authorization_url: flow.device_authorization_url,
-                        token_url: flow.token_url,
-                        refresh_url: flow.refresh_url,
-                        scopes: flow.scopes.into_iter().collect(),
-                    })
-                }),
-            ],
-            "a security scheme's flows",
-        )
+impl From<a2a_json::OauthFlows> for OauthFlows {
+    fn from(flows: a2a_json::OauthFlows) -> Self {
+        match flows {
+            a2a_json::OauthFlows::AuthorizationCode(flow) => {
+                OauthFlows::AuthorizationCode(AuthorizationCodeOauthFlow {
+                    authorization_url: flow.authorization_url,
+                    token_url: flow.token_url,
+                    refresh_url: flow.refresh_url,
+                    scopes: flow.scopes.into_iter().collect(),
+                    pkce_required: flow.pkce_required,
+                })
+            }
+            a2a_json::OauthFlows::ClientCredentials(flow) => {
+                OauthFlows::ClientCredentials(ClientCredentialsOauthFlow {
+                    token_url: flow.token_url,
+                    refresh_url: flow.refresh_url,
+                    scopes: flow.scopes.into_iter().collect(),
+                })
+            }
+            a2a_json::OauthFlows::Implicit(flow) => OauthFlows::Implicit(ImplicitOauthFlow {
+                authorization_url: flow.authorization_url,
+                refresh_url: flow.refresh_url,
+                scopes: flow.scopes.into_iter().collect(),
+            }),
+            a2a_json::OauthFlows::Password(flow) => OauthFlows::Password(PasswordOauthFlow {
+                token_url: flow.token_url,
+                refresh_url: flow.refresh_url,
+                scopes: flow.scopes.into_iter().collect(),
+            }),
+            a2a_json::OauthFlows::DeviceCode(flow) => OauthFlows::DeviceCode(DeviceCodeOauthFlow {
+                device_authorization_url: flow.device_authorization_url,
+                token_url: flow.token_url,
+                refresh_url: flow.refresh_url,
+                scopes: flow.scopes.into_iter().collect(),
+            }),
+        }
     }
 }
 
-impl From<wire::AgentExtension> for AgentExtension {
-    fn from(extension: wire::AgentExtension) -> Self {
+impl From<a2a_json::AgentExtension> for AgentExtension {
+    fn from(extension: a2a_json::AgentExtension) -> Self {
         AgentExtension {
             uri: extension.uri,
             description: extension.description,
@@ -616,14 +511,13 @@ impl From<wire::AgentExtension> for AgentExtension {
     }
 }
 
-impl TryFrom<wire::AgentCard> for AgentCard {
-    type Error = String;
-
-    fn try_from(card: wire::AgentCard) -> Result<Self, String> {
-        Ok(AgentCard {
+impl From<a2a_json::AgentCard> for AgentCard {
+    fn from(card: a2a_json::AgentCard) -> Self {
+        AgentCard {
             name: card.name,
             description: card.description,
-            supported_interfaces: non_empty(card.supported_interfaces, "a card's interfaces")?
+            supported_interfaces: card
+                .supported_interfaces
                 .into_iter()
                 .map(|interface| AgentInterface {
                     url: interface.url,
@@ -652,26 +546,25 @@ impl TryFrom<wire::AgentCard> for AgentCard {
             security_schemes: card
                 .security_schemes
                 .into_iter()
-                .map(|(name, scheme)| Ok((name, scheme.try_into()?)))
-                .collect::<Result<_, String>>()?,
+                .map(|(name, scheme)| (name, scheme.into()))
+                .collect(),
             security_requirements: security_requirements(card.security_requirements),
-            default_input_modes: non_empty(card.default_input_modes, "a card's input modes")?,
-            default_output_modes: non_empty(card.default_output_modes, "a card's output modes")?,
-            skills: non_empty(card.skills, "a card's skills")?
+            default_input_modes: card.default_input_modes,
+            default_output_modes: card.default_output_modes,
+            skills: card
+                .skills
                 .into_iter()
-                .map(|skill| {
-                    Ok(AgentSkill {
-                        id: skill.id,
-                        name: skill.name,
-                        description: skill.description,
-                        tags: non_empty(skill.tags, "a skill's tags")?,
-                        examples: skill.examples,
-                        input_modes: skill.input_modes,
-                        output_modes: skill.output_modes,
-                        security_requirements: security_requirements(skill.security_requirements),
-                    })
+                .map(|skill| AgentSkill {
+                    id: skill.id,
+                    name: skill.name,
+                    description: skill.description,
+                    tags: skill.tags,
+                    examples: skill.examples,
+                    input_modes: skill.input_modes,
+                    output_modes: skill.output_modes,
+                    security_requirements: security_requirements(skill.security_requirements),
                 })
-                .collect::<Result<_, String>>()?,
+                .collect(),
             signatures: card
                 .signatures
                 .into_iter()
@@ -682,366 +575,13 @@ impl TryFrom<wire::AgentCard> for AgentCard {
                 })
                 .collect(),
             icon_url: card.icon_url,
-        })
-    }
-}
-
-// A2A's messages as their JSON. A field without `Option` or a default is
-// required, so JSON without it doesn't parse.
-mod wire {
-    use std::collections::BTreeMap;
-
-    use serde::Deserialize;
-    use serde_json::Value;
-
-    #[derive(Deserialize)]
-    pub(super) enum Role {
-        #[serde(rename = "ROLE_UNSPECIFIED")]
-        Unspecified,
-        #[serde(rename = "ROLE_USER")]
-        User,
-        #[serde(rename = "ROLE_AGENT")]
-        Agent,
-    }
-
-    #[derive(Deserialize)]
-    pub(super) enum TaskState {
-        #[serde(rename = "TASK_STATE_UNSPECIFIED")]
-        Unspecified,
-        #[serde(rename = "TASK_STATE_SUBMITTED")]
-        Submitted,
-        #[serde(rename = "TASK_STATE_WORKING")]
-        Working,
-        #[serde(rename = "TASK_STATE_COMPLETED")]
-        Completed,
-        #[serde(rename = "TASK_STATE_FAILED")]
-        Failed,
-        #[serde(rename = "TASK_STATE_CANCELED")]
-        Canceled,
-        #[serde(rename = "TASK_STATE_INPUT_REQUIRED")]
-        InputRequired,
-        #[serde(rename = "TASK_STATE_REJECTED")]
-        Rejected,
-        #[serde(rename = "TASK_STATE_AUTH_REQUIRED")]
-        AuthRequired,
-    }
-
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    pub(super) struct Part {
-        pub text: Option<String>,
-        pub raw: Option<String>,
-        pub url: Option<String>,
-        pub data: Option<Value>,
-        pub metadata: Option<Value>,
-        pub filename: Option<String>,
-        pub media_type: Option<String>,
-    }
-
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    pub(super) struct Message {
-        pub message_id: String,
-        pub context_id: Option<String>,
-        pub task_id: Option<String>,
-        pub role: Role,
-        pub parts: Vec<Part>,
-        pub metadata: Option<Value>,
-        #[serde(default)]
-        pub extensions: Vec<String>,
-        #[serde(default)]
-        pub reference_task_ids: Vec<String>,
-    }
-
-    #[derive(Deserialize)]
-    pub(super) struct TaskStatus {
-        pub state: TaskState,
-        pub message: Option<Message>,
-        pub timestamp: Option<String>,
-    }
-
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    pub(super) struct Artifact {
-        pub artifact_id: String,
-        pub name: Option<String>,
-        pub description: Option<String>,
-        pub parts: Vec<Part>,
-        pub metadata: Option<Value>,
-        #[serde(default)]
-        pub extensions: Vec<String>,
-    }
-
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    pub(super) struct Task {
-        pub id: String,
-        pub context_id: Option<String>,
-        pub status: TaskStatus,
-        #[serde(default)]
-        pub artifacts: Vec<Artifact>,
-        #[serde(default)]
-        pub history: Vec<Message>,
-        pub metadata: Option<Value>,
-    }
-
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    pub(super) struct TaskStatusUpdateEvent {
-        pub task_id: String,
-        pub context_id: String,
-        pub status: TaskStatus,
-        pub metadata: Option<Value>,
-    }
-
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    pub(super) struct TaskArtifactUpdateEvent {
-        pub task_id: String,
-        pub context_id: String,
-        pub artifact: Artifact,
-        #[serde(default)]
-        pub append: bool,
-        #[serde(default)]
-        pub last_chunk: bool,
-        pub metadata: Option<Value>,
-    }
-
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    pub(super) struct StreamResponse {
-        pub task: Option<Task>,
-        pub message: Option<Message>,
-        pub status_update: Option<TaskStatusUpdateEvent>,
-        pub artifact_update: Option<TaskArtifactUpdateEvent>,
-    }
-
-    // The field of a `StreamResponse` that is set.
-    pub(super) enum Payload {
-        Task(Task),
-        Message(Message),
-        StatusUpdate(TaskStatusUpdateEvent),
-        ArtifactUpdate(TaskArtifactUpdateEvent),
-    }
-
-    // The page fields may be missing, because ProtoJSON can leave out an empty
-    // string or a 0.
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    pub(super) struct ListTasksResponse {
-        #[serde(default)]
-        pub tasks: Vec<Task>,
-        #[serde(default)]
-        pub next_page_token: String,
-        #[serde(default)]
-        pub page_size: u32,
-        #[serde(default)]
-        pub total_size: u32,
-    }
-
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    pub(super) struct AgentInterface {
-        pub url: String,
-        pub protocol_binding: String,
-        pub tenant: Option<String>,
-        pub protocol_version: String,
-    }
-
-    #[derive(Deserialize)]
-    pub(super) struct AgentProvider {
-        pub url: String,
-        pub organization: String,
-    }
-
-    #[derive(Deserialize)]
-    pub(super) struct AgentExtension {
-        pub uri: Option<String>,
-        pub description: Option<String>,
-        #[serde(default)]
-        pub required: bool,
-        pub params: Option<Value>,
-    }
-
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    pub(super) struct AgentCapabilities {
-        pub streaming: Option<bool>,
-        pub push_notifications: Option<bool>,
-        #[serde(default)]
-        pub extensions: Vec<AgentExtension>,
-        pub extended_agent_card: Option<bool>,
-    }
-
-    #[derive(Deserialize)]
-    pub(super) struct StringList {
-        #[serde(default)]
-        pub list: Vec<String>,
-    }
-
-    #[derive(Deserialize)]
-    pub(super) struct SecurityRequirement {
-        #[serde(default)]
-        pub schemes: BTreeMap<String, StringList>,
-    }
-
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    pub(super) struct AgentSkill {
-        pub id: String,
-        pub name: String,
-        pub description: String,
-        pub tags: Vec<String>,
-        #[serde(default)]
-        pub examples: Vec<String>,
-        #[serde(default)]
-        pub input_modes: Vec<String>,
-        #[serde(default)]
-        pub output_modes: Vec<String>,
-        #[serde(default)]
-        pub security_requirements: Vec<SecurityRequirement>,
-    }
-
-    #[derive(Deserialize)]
-    pub(super) struct ApiKeySecurityScheme {
-        pub description: Option<String>,
-        pub location: String,
-        pub name: String,
-    }
-
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    pub(super) struct HttpAuthSecurityScheme {
-        pub description: Option<String>,
-        pub scheme: String,
-        pub bearer_format: Option<String>,
-    }
-
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    pub(super) struct Oauth2SecurityScheme {
-        pub description: Option<String>,
-        pub flows: OauthFlows,
-        pub oauth2_metadata_url: Option<String>,
-    }
-
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    pub(super) struct OpenIdConnectSecurityScheme {
-        pub description: Option<String>,
-        pub open_id_connect_url: String,
-    }
-
-    #[derive(Deserialize)]
-    pub(super) struct MutualTlsSecurityScheme {
-        pub description: Option<String>,
-    }
-
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    pub(super) struct SecurityScheme {
-        pub api_key_security_scheme: Option<ApiKeySecurityScheme>,
-        pub http_auth_security_scheme: Option<HttpAuthSecurityScheme>,
-        pub oauth2_security_scheme: Option<Oauth2SecurityScheme>,
-        pub open_id_connect_security_scheme: Option<OpenIdConnectSecurityScheme>,
-        pub mtls_security_scheme: Option<MutualTlsSecurityScheme>,
-    }
-
-    // A flow's scopes may be missing, because ProtoJSON can leave out an empty
-    // map.
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    pub(super) struct AuthorizationCodeOauthFlow {
-        pub authorization_url: String,
-        pub token_url: String,
-        pub refresh_url: Option<String>,
-        #[serde(default)]
-        pub scopes: BTreeMap<String, String>,
-        #[serde(default)]
-        pub pkce_required: bool,
-    }
-
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    pub(super) struct ClientCredentialsOauthFlow {
-        pub token_url: String,
-        pub refresh_url: Option<String>,
-        #[serde(default)]
-        pub scopes: BTreeMap<String, String>,
-    }
-
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    pub(super) struct ImplicitOauthFlow {
-        pub authorization_url: Option<String>,
-        pub refresh_url: Option<String>,
-        #[serde(default)]
-        pub scopes: BTreeMap<String, String>,
-    }
-
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    pub(super) struct PasswordOauthFlow {
-        pub token_url: Option<String>,
-        pub refresh_url: Option<String>,
-        #[serde(default)]
-        pub scopes: BTreeMap<String, String>,
-    }
-
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    pub(super) struct DeviceCodeOauthFlow {
-        pub device_authorization_url: String,
-        pub token_url: String,
-        pub refresh_url: Option<String>,
-        #[serde(default)]
-        pub scopes: BTreeMap<String, String>,
-    }
-
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    pub(super) struct OauthFlows {
-        pub authorization_code: Option<AuthorizationCodeOauthFlow>,
-        pub client_credentials: Option<ClientCredentialsOauthFlow>,
-        pub implicit: Option<ImplicitOauthFlow>,
-        pub password: Option<PasswordOauthFlow>,
-        pub device_code: Option<DeviceCodeOauthFlow>,
-    }
-
-    #[derive(Deserialize)]
-    pub(super) struct AgentCardSignature {
-        pub protected: String,
-        pub signature: String,
-        pub header: Option<Value>,
-    }
-
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    pub(super) struct AgentCard {
-        pub name: String,
-        pub description: String,
-        pub supported_interfaces: Vec<AgentInterface>,
-        pub provider: Option<AgentProvider>,
-        pub version: String,
-        pub documentation_url: Option<String>,
-        pub capabilities: AgentCapabilities,
-        #[serde(default)]
-        pub security_schemes: BTreeMap<String, SecurityScheme>,
-        #[serde(default)]
-        pub security_requirements: Vec<SecurityRequirement>,
-        pub default_input_modes: Vec<String>,
-        pub default_output_modes: Vec<String>,
-        pub skills: Vec<AgentSkill>,
-        #[serde(default)]
-        pub signatures: Vec<AgentCardSignature>,
-        pub icon_url: Option<String>,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::exports::composable::a2a::client::SendMessageConfiguration;
 
     fn card_json() -> Value {
         json!({
@@ -1145,6 +685,12 @@ mod tests {
                 "{field}: {error}"
             );
         }
+        assert!(
+            agent_card(b"not json")
+                .err()
+                .unwrap()
+                .starts_with("the agent's card is not valid")
+        );
     }
 
     #[test]
@@ -1159,14 +705,14 @@ mod tests {
             json[field] = json!([]);
             assert_eq!(
                 card(&json).err().unwrap(),
-                format!("{name} must have at least one element")
+                format!("the agent's card is not valid: {name} must have at least one element")
             );
         }
         let mut json = card_json();
         json["skills"][0]["tags"] = json!([]);
         assert_eq!(
             card(&json).err().unwrap(),
-            "a skill's tags must have at least one element"
+            "the agent's card is not valid: a skill's tags must have at least one element"
         );
     }
 
@@ -1176,7 +722,7 @@ mod tests {
         json["securitySchemes"]["bearer"] = json!({});
         assert_eq!(
             card(&json).err().unwrap(),
-            "a security scheme has none of its possible fields"
+            "the agent's card is not valid: a security scheme has none of its possible fields"
         );
         json["securitySchemes"]["bearer"] = json!({
             "httpAuthSecurityScheme": { "scheme": "Bearer" },
@@ -1184,7 +730,7 @@ mod tests {
         });
         assert_eq!(
             card(&json).err().unwrap(),
-            "a security scheme has more than one of its possible fields"
+            "the agent's card is not valid: a security scheme has more than one of its possible fields"
         );
     }
 
@@ -1300,7 +846,7 @@ mod tests {
     fn a_stream_response_has_exactly_one_kind() {
         assert_eq!(
             stream_response(json!({})).err().unwrap(),
-            "a response has none of its possible fields"
+            "the agent's response is not valid: a response has none of its possible fields"
         );
         let message =
             json!({ "messageId": "m-1", "role": "ROLE_AGENT", "parts": [{ "text": "hi" }] });
@@ -1308,7 +854,7 @@ mod tests {
             stream_response(json!({ "task": task_json("TASK_STATE_WORKING"), "message": message }))
                 .err()
                 .unwrap(),
-            "a response has more than one of its possible fields"
+            "the agent's response is not valid: a response has more than one of its possible fields"
         );
     }
 
@@ -1337,7 +883,7 @@ mod tests {
             send_message_response(json!({ "statusUpdate": update }))
                 .err()
                 .unwrap(),
-            "the agent's response is neither a task nor a message"
+            "the agent's response is not valid: a response has none of its possible fields"
         );
     }
 
@@ -1348,6 +894,16 @@ mod tests {
         assert_eq!(response.tasks.len(), 1);
         assert_eq!(response.next_page_token, "");
         assert_eq!((response.page_size, response.total_size), (0, 0));
+    }
+
+    #[test]
+    fn a_list_of_tasks_with_a_negative_count_is_not_valid() {
+        assert_eq!(
+            list_tasks_response(json!({ "tasks": [], "totalSize": -1 }))
+                .err()
+                .unwrap(),
+            "the agent's list of tasks is not valid: totalSize is negative"
+        );
     }
 
     fn message(message_id: &str) -> Message {
@@ -1413,14 +969,32 @@ mod tests {
     }
 
     #[test]
-    fn metadata_that_is_not_json_is_not_sent() {
-        let request = SendMessageRequest {
+    fn metadata_that_is_not_a_json_object_is_not_sent() {
+        let mut request = SendMessageRequest {
             message: message("m-1"),
             configuration: None,
             metadata: Some("not json".to_string()),
         };
         let error = send_message_params(&request, None).err().unwrap();
         assert!(error.starts_with("'metadata' is not valid JSON"), "{error}");
+
+        request.metadata = Some("[1]".to_string());
+        assert_eq!(
+            send_message_params(&request, None).err().unwrap(),
+            "'metadata' is not a JSON object"
+        );
+    }
+
+    #[test]
+    fn a_length_the_protocol_cannot_hold_is_not_sent() {
+        let request = GetTaskRequest {
+            id: "task-1".to_string(),
+            history_length: Some(u32::MAX),
+        };
+        assert_eq!(
+            get_task_params(&request, None).err().unwrap(),
+            "'history-length' is too large"
+        );
     }
 
     #[test]
@@ -1435,7 +1009,7 @@ mod tests {
             include_artifacts: Some(true),
         };
         assert_eq!(
-            list_tasks_params(&request, None),
+            list_tasks_params(&request, None).unwrap(),
             json!({
                 "contextId": "ctx-1",
                 "status": "TASK_STATE_INPUT_REQUIRED",

@@ -1,0 +1,10 @@
+[package]
+name = "composable-a2a-server"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+a2a-json = { path = "../a2a-json" }
+composable-agents = { path = "../.." }
+serde_json.workspace = true
+time = { version = "0.3", default-features = false, features = ["std", "formatting"] }

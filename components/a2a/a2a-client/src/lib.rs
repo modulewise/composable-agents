@@ -123,12 +123,12 @@ impl GuestAgent for RemoteAgent {
     }
 
     async fn get_task(&self, request: GetTaskRequest) -> Result<Task, Error> {
-        let params = mapping::get_task_params(&request, self.tenant());
+        let params = mapping::get_task_params(&request, self.tenant())?;
         Ok(mapping::task(self.call("GetTask", params).await?)?)
     }
 
     async fn list_tasks(&self, request: ListTasksRequest) -> Result<ListTasksResponse, Error> {
-        let params = mapping::list_tasks_params(&request, self.tenant());
+        let params = mapping::list_tasks_params(&request, self.tenant())?;
         let result = self.call("ListTasks", params).await?;
         Ok(mapping::list_tasks_response(result)?)
     }
