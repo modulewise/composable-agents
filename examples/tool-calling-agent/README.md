@@ -15,7 +15,7 @@ The config is split across files, which the CLI combines:
 
 | Config | Provider | Model | Client |
 |---|---|---|---|
-| `gemma.toml` | `ollama` | `gemma4:31b` | `chat-completions-client` |
+| `gemma.toml` | `ollama` | `gemma4:31b` (`include-reasoning = true`) | `chat-completions-client` |
 | `gpt.toml` | `openai` | `gpt-5.4-mini` | `chat-completions-client` |
 | `claude.toml` | `anthropic` | `claude-haiku-5-5` (`effort = "high"`, `include-reasoning = true`) | `anthropic-messages-client` |
 
@@ -55,14 +55,17 @@ status, finish reason, and usage go to stderr:
 
 ```
 status: working
+reasoning: The user wants to calculate (17 * 23) - 5.
+I need to multiply 17 and 23 first, then subtract 5 from the result.
 status: working: Calling tool `multiply`
 status: working
+reasoning: The product of 17 and 23 is 391. Now I need to subtract 5 from this result.
 status: working: Calling tool `subtract`
 status: working
-17 times 23 minus 5 is 386.
+17 times 23, minus 5 is 386.
 status: completed
 finish reason: completed (stop)
-usage: ollama gemma4:31b (3 calls): input 840, output 146, cache-read 834
+usage: ollama gemma4:31b (3 calls): input 840, output 120, cache-read 526
 ```
 
 The usage line sums the task's model calls for each provider and model.

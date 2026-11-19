@@ -82,9 +82,16 @@ audio, video, and documents. It maps `output-schema` to a strict JSON Schema
 | `seed` | optional default, overridden by `model-settings` |
 | `stop-sequences` | optional default, a JSON array of strings (e.g. `'["END"]'`), overridden by `model-settings` |
 | `effort` | optional: sent as `reasoning_effort` unchanged, since the values depend on the provider and model |
+| `include-reasoning` | default: `false`; `true` includes the reasoning text a provider sends in each response |
 
 It fails a session when `top-k` is configured, since the API has no `top_k`. A
 `top-k` in `model-settings` isn't sent.
+
+With `include-reasoning`, the text in a chunk's `reasoning` field is streamed
+as reasoning deltas and is the first item of the response's output. Without it,
+that text is discarded. OpenAI includes none when called via the Chat
+Completions API. Ollama sends it for a model that thinks. Reasoning is not sent
+back with later calls, since the API has no form for it.
 
 Whether a setting has an effect depends on the provider and model. With Ollama,
 some models ignore stop sequences, and OpenAI rejects them for some models with

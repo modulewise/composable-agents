@@ -1,9 +1,11 @@
 [model.local]
 provider = "ollama"
 name = "gemma4:31b"
+include-reasoning = true
 
 [agent.assistant]
 model = "local"
 description = "Answers questions concisely"
 version = "0.1.0"
 instructions = "Answer in one or two sentences."
+report-reasoning = true

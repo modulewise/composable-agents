@@ -10,7 +10,7 @@ Each model has its own config:
 
 | Model | Config | Provider | Client |
 |---|---|---|---|
-| `gemma4:31b` | `gemma.toml` | `ollama` | `chat-completions-client` |
+| `gemma4:31b` | `gemma.toml` | `ollama` (`include-reasoning = true`) | `chat-completions-client` |
 | `gpt-5.4-mini` | `gpt.toml` | `openai` | `chat-completions-client` |
 | `claude-haiku-5-5` | `claude.toml` | `anthropic` (`effort = "high"`, `include-reasoning = true`) | `anthropic-messages-client` |
 
@@ -43,10 +43,11 @@ Each model has its own config:
 
 The script lists the agent's metadata, then invokes it with the question
 (`gemma` and "Why is the sky blue?" by default). The reply streams to stdout,
-and the task's status, finish reason, and usage go to stderr:
+and the task's status, reasoning, finish reason, and usage go to stderr:
 
 ```
 status: working
+reasoning: The user asks why the sky is blue...
 The sky looks blue because...
 status: completed
 finish reason: completed (stop)
@@ -61,13 +62,15 @@ echo "What is 2+2?" | agents invoke gemma.toml -- assistant
 
 ## Reasoning
 
-`claude.toml` sets `include-reasoning = true` on the model, so its responses
-include a summary of its reasoning, and `report-reasoning = true` on the
-agent, so the agent sends that reasoning in status messages. Each run of
-reasoning shows on stderr as a `reasoning:` line before the reply. Whether the
-model thinks is its own choice per request, so a simple question may show
-none:
+`gemma.toml` and `claude.toml` set `include-reasoning = true` on the model, so
+its responses include its reasoning (a summary, for Claude), and
+`report-reasoning = true` on the agent, so the agent sends that reasoning in
+status messages. Each run of reasoning shows on stderr as a `reasoning:` line
+before the reply. Without either setting, none is shown. `gpt.toml` sets
+neither, since OpenAI includes no reasoning text when called via the Chat
+Completions API. Whether Claude thinks is its own choice per request, so a
+simple question may show none:
 
 ```sh
-./run.sh claude "A train leaves at 9:15am. The trip takes 2 hours 15 minutes. Then it waits 30 minutes. When does it leave the station?"
+./run.sh claude "A train leaves at 9:15am. The trip takes 2 hours 15 minutes. Then it waits 30 minutes. When does it leave the station next?"
 ```

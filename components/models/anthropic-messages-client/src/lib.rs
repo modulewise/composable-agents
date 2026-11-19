@@ -39,10 +39,7 @@ const ANTHROPIC_VERSION: &str = "2026-10-21";
 
 /// A client of Anthropic's Messages API. It keeps the conversation history in
 /// Messages API form and sends it with each call.
-struct MessagesClient;
-
-/// The client's own config.
-struct MessagesConfig {
+struct MessagesClient {
     effort: Option<mapping::Effort>,
     include_reasoning: bool,
     max_retries: u32,
@@ -55,7 +52,6 @@ struct MessagesState {
 }
 
 impl Client for MessagesClient {
-    type Config = MessagesConfig;
     type State = MessagesState;
     // The assistant turn, if the response has content.
     type Output = Option<mapping::Message>;
@@ -67,13 +63,13 @@ impl Client for MessagesClient {
     // which counts toward it.
     const DEFAULT_MAX_TOKENS: Option<u32> = Some(64000);
 
-    fn config() -> Result<MessagesConfig, ModelError> {
+    fn new() -> Result<Self, ModelError> {
         // The API rejects the first three and has no `seed`.
         reject_config(
             &[TEMPERATURE_CONFIG, TOP_P_CONFIG, TOP_K_CONFIG, SEED_CONFIG],
             Self::API,
         )?;
-        Ok(MessagesConfig {
+        Ok(MessagesClient {
             effort: parsed_config(EFFORT_CONFIG, mapping::EFFORT_VALUES)?,
             include_reasoning: parsed_config(INCLUDE_REASONING_CONFIG, "true or false")?
                 .unwrap_or(false),
@@ -82,8 +78,8 @@ impl Client for MessagesClient {
         })
     }
 
-    fn max_retries(config: &MessagesConfig) -> u32 {
-        config.max_retries
+    fn max_retries(&self) -> u32 {
+        self.max_retries
     }
 
     async fn sleep(duration: Duration) {
@@ -124,30 +120,27 @@ impl Client for MessagesClient {
     }
 
     fn request(
+        &self,
         model: &str,
         state: &MessagesState,
-        config: &MessagesConfig,
         max_tokens: Option<u32>,
     ) -> Result<Vec<u8>, ModelError> {
         mapping::build_request(
             model,
             &state.messages,
             &state.api_settings,
-            config.effort,
-            config.include_reasoning,
+            self.effort,
+            self.include_reasoning,
             max_tokens,
         )
     }
 
-    fn parameters(
-        state: &MessagesState,
-        config: &MessagesConfig,
-        max_tokens: Option<u32>,
-    ) -> RequestParameters {
-        state.api_settings.parameters(config.effort, max_tokens)
+    fn parameters(&self, state: &MessagesState, max_tokens: Option<u32>) -> RequestParameters {
+        state.api_settings.parameters(self.effort, max_tokens)
     }
 
     async fn read_response(
+        &self,
         body: StreamReader<u8>,
         deltas: &mut Deltas,
     ) -> Result<(ModelResponse, Option<mapping::Message>), ModelError> {

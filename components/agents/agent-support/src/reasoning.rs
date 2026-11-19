@@ -121,8 +121,8 @@ mod tests {
         assert!(!run.streamed);
 
         run.push("Add ".to_string());
-        run.push("them.".to_string());
-        assert_eq!(run.take().as_deref(), Some("Add them."));
+        run.push("the numbers.".to_string());
+        assert_eq!(run.take().as_deref(), Some("Add the numbers."));
 
         // The next run starts empty, and reasoning still counts as streamed.
         assert!(run.take().is_none());
@@ -150,8 +150,8 @@ mod tests {
 
     #[test]
     fn reasoning_is_a_text_part_marked_in_its_metadata() {
-        let part = reasoning_part("Add them.".to_string());
-        assert!(matches!(&part.content, PartContent::Text(text) if text == "Add them."));
+        let part = reasoning_part("Add the numbers.".to_string());
+        assert!(matches!(&part.content, PartContent::Text(text) if text == "Add the numbers."));
         assert_eq!(part.metadata.as_deref(), Some(r#"{"reasoning":true}"#));
     }
 

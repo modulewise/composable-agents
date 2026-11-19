@@ -20,12 +20,10 @@ use crate::tool_names::{ToolNames, sent_history, sent_input, sent_settings};
 /// A call's outcome: the assembled response, or why the call failed.
 pub type Outcome = Result<ModelResponse, ModelError>;
 
-/// A client for one model API, run by a [`Session`]. It sees tool names as
-/// sent to the API (see `tool_names`).
-pub trait Client: 'static {
-    /// The client's own config, beyond [`CommonConfig`], read once per
-    /// session.
-    type Config: 'static;
+/// A client for one model API, run by a [`Session`]. It holds its own config,
+/// beyond [`CommonConfig`], and sees tool names as sent to the API (see
+/// `tool_names`).
+pub trait Client: Sized + 'static {
     /// State kept between a session's calls, e.g. the conversation history in
     /// the API's form.
     type State: 'static;
@@ -41,15 +39,16 @@ pub trait Client: 'static {
     /// The client's default output limit. None means no limit is sent.
     const DEFAULT_MAX_TOKENS: Option<u32> = None;
 
-    /// Reads the client's own config. Fails on a missing or invalid value.
-    fn config() -> Result<Self::Config, ModelError>;
+    /// Creates the client from its own config, once per session. Fails on a
+    /// missing or invalid value.
+    fn new() -> Result<Self, ModelError>;
 
     /// The request headers, with the API key when one is configured.
     fn headers(api_key: Option<&str>) -> Vec<(String, String)>;
 
     /// The maximum number of retries for a failed request (default 0). A
     /// client that can return a nonzero value must implement `sleep`.
-    fn max_retries(_config: &Self::Config) -> u32 {
+    fn max_retries(&self) -> u32 {
         0
     }
 
@@ -72,18 +71,14 @@ pub trait Client: 'static {
 
     /// The request body for a call, with `max_tokens` as its limit, if any.
     fn request(
+        &self,
         model: &str,
         state: &Self::State,
-        config: &Self::Config,
         max_tokens: Option<u32>,
     ) -> Result<Vec<u8>, ModelError>;
 
     /// The parameters a request sends, with `max_tokens` as its limit, if any.
-    fn parameters(
-        state: &Self::State,
-        config: &Self::Config,
-        max_tokens: Option<u32>,
-    ) -> RequestParameters;
+    fn parameters(&self, state: &Self::State, max_tokens: Option<u32>) -> RequestParameters;
 
     /// Reads the response body, writing deltas as they arrive, and returns the
     /// assembled response and its state update. Token counts the provider
@@ -91,6 +86,7 @@ pub trait Client: 'static {
     /// deltas, a write fails; the client returns that error and drops the
     /// body, closing the connection.
     fn read_response(
+        &self,
         body: StreamReader<u8>,
         deltas: &mut Deltas,
     ) -> impl Future<Output = Result<(ModelResponse, Self::Output), ModelError>>;
@@ -139,7 +135,8 @@ pub struct Session<C: Client> {
     // With tool names as sent.
     settings: ModelSettings,
     common: CommonConfig,
-    config: C::Config,
+    // Shared with the task that reads each response.
+    client: Rc<C>,
     names: Rc<ToolNames>,
     // Shared with the streaming task, which records the response when it
     // completes.
@@ -157,7 +154,7 @@ impl<C: Client> Session<C> {
     pub fn new(settings: ModelSettings, history: Vec<ModelExchange>) -> Result<Self, SessionError> {
         let common =
             CommonConfig::load(C::DEFAULT_BASE_URL, C::PATH).map_err(SessionError::Config)?;
-        let config = C::config().map_err(SessionError::Config)?;
+        let client = C::new().map_err(SessionError::Config)?;
         let names = ToolNames::new(&settings).map_err(SessionError::Settings)?;
         let mut settings = sent_settings(&settings);
         // Each sampling setting is the caller's, else the configured one.
@@ -172,7 +169,7 @@ impl<C: Client> Session<C> {
         Ok(Session {
             settings,
             common,
-            config,
+            client: Rc::new(client),
             names: Rc::new(names),
             state: Rc::new(RefCell::new(state)),
             exchanges: RefCell::new(Vec::new()),
@@ -188,7 +185,7 @@ impl<C: Client> Session<C> {
             .or(self.settings.max_tokens)
             .or(self.common.max_tokens)
             .or(C::DEFAULT_MAX_TOKENS);
-        let parameters = C::parameters(&self.state.borrow(), &self.config, max_tokens);
+        let parameters = self.client.parameters(&self.state.borrow(), max_tokens);
         ModelCall {
             request_model: self.common.model.clone(),
             provider: self.common.provider.clone(),
@@ -212,12 +209,9 @@ impl<C: Client> Session<C> {
             return Err(ModelError::new("the session has a call in progress"));
         }
         C::add_input(&mut self.state.borrow_mut(), &sent_input(&request.input))?;
-        let body = C::request(
-            &self.common.model,
-            &self.state.borrow(),
-            &self.config,
-            max_tokens,
-        )?;
+        let body = self
+            .client
+            .request(&self.common.model, &self.state.borrow(), max_tokens)?;
 
         // Record the exchange. Its output and counts are set as the response
         // is read.
@@ -240,7 +234,8 @@ impl<C: Client> Session<C> {
         // failed call's exchange keeps the counts recorded before it failed.
         let endpoint = self.common.endpoint.clone();
         let headers = C::headers(self.common.api_key.as_deref());
-        let max_retries = C::max_retries(&self.config);
+        let max_retries = self.client.max_retries();
+        let client = self.client.clone();
         let (delta_tx, delta_rx) = C::delta_stream();
         let (outcome_tx, outcome_rx) =
             C::outcome_future(|| Err(ModelError::new("session dropped before completion")));
@@ -256,7 +251,7 @@ impl<C: Client> Session<C> {
             };
             let outcome = match send_request(&endpoint, &headers, body, max_retries, C::sleep).await
             {
-                Ok(response) => C::read_response(response.body, &mut deltas).await,
+                Ok(response) => client.read_response(response.body, &mut deltas).await,
                 Err(error) => Err(error),
             };
             drop(deltas);

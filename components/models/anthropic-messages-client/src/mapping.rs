@@ -1460,7 +1460,7 @@ mod tests {
         let (deltas, outcome) = fold(&[
             r#"{"type": "message_start", "message": {"id": "msg_2", "model": "claude-test", "usage": {"input_tokens": 5, "cache_creation_input_tokens": 20, "cache_read_input_tokens": 100, "output_tokens": 1}}}"#,
             r#"{"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": "", "signature": ""}}"#,
-            r#"{"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "Add them."}}"#,
+            r#"{"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "Add the numbers."}}"#,
             r#"{"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "sig-1"}}"#,
             r#"{"type": "content_block_stop", "index": 0}"#,
             r#"{"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "id": "toolu_1", "name": "calc_add", "input": {}}}"#,
@@ -1479,7 +1479,7 @@ mod tests {
             format!(
                 "{:?}",
                 [
-                    ContentDelta::Reasoning("Add them.".into()),
+                    ContentDelta::Reasoning("Add the numbers.".into()),
                     ContentDelta::ToolCall(ToolCallDelta {
                         index: 1,
                         id: Some("toolu_1".into()),
@@ -1515,7 +1515,7 @@ mod tests {
                 "{:?}",
                 [
                     ModelOutputItem::Reasoning(Reasoning {
-                        text: "Add them.".into(),
+                        text: "Add the numbers.".into(),
                         redacted: false,
                     }),
                     ModelOutputItem::ToolCall(ToolCall {
@@ -1538,7 +1538,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(assistant.unwrap()).unwrap(),
             json!({ "role": "assistant", "content": [
-                { "type": "thinking", "thinking": "Add them.", "signature": "sig-1" },
+                { "type": "thinking", "thinking": "Add the numbers.", "signature": "sig-1" },
                 { "type": "tool_use", "id": "toolu_1", "name": "calc_add", "input": { "a": 1 } },
             ] })
         );
@@ -1546,7 +1546,7 @@ mod tests {
         assert_eq!(opaque.api, "anthropic-messages");
         assert_eq!(
             opaque.content,
-            r#"[{"type":"thinking","thinking":"Add them.","signature":"sig-1"},{"type":"tool_use","id":"toolu_1","name":"calc_add","input":{"a":1}}]"#
+            r#"[{"type":"thinking","thinking":"Add the numbers.","signature":"sig-1"},{"type":"tool_use","id":"toolu_1","name":"calc_add","input":{"a":1}}]"#
         );
     }
 
@@ -1658,7 +1658,7 @@ mod tests {
                 },
                 output: Some(vec![
                     ModelOutputItem::Reasoning(Reasoning {
-                        text: "Add them.".to_string(),
+                        text: "Add the numbers.".to_string(),
                         redacted: false,
                     }),
                     ModelOutputItem::ToolCall(ToolCall {
