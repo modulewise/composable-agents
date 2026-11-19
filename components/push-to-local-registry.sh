@@ -19,6 +19,7 @@ REPOSITORY="composable-agents"
 TAG="latest"
 COMPONENTS=(
   a2a-client
+  a2a-tool
   agent-otel-interceptor
   anthropic-messages-client
   chat-agent

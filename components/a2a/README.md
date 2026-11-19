@@ -72,3 +72,40 @@ It imports `componentized:http/client`, and has no config.
 Not yet supported: the gRPC and HTTP+JSON bindings, `SubscribeToTask`, push
 notification configs, the extended agent card, caching the card, and verifying
 its signatures.
+
+## a2a-tool
+
+Exports `composable:tools/tool` for one agent on an A2A server, so an agent
+calls another agent as it calls any tool. It imports `client`, and connects to
+the agent on first use.
+
+The tool's metadata comes from the agent's card, including its name and
+description, and it expects one string argument: `message`.
+
+A tool call sends the message with `send-streaming-message` when the card
+declares streaming, and with `send-message` otherwise. The tool call result is
+the agent's response:
+
+| Response | Result |
+|---|---|
+| a message | the message's parts |
+| a `completed` task | its artifacts' parts, or its status message when it has no artifacts |
+| an `input-required` task | its status message, and the next call continues the task |
+| a `failed`, `rejected`, `canceled` or `auth-required` task | an error result with its status message |
+
+A text or data part is text, a URL is a resource link, and a file is an image
+or audio by its media type, or text that names the file. A `tool-error` is
+returned for any request the agent rejects, an agent that cannot be reached, or
+a stream that fails.
+
+Within one invocation of the calling agent, the tool sends back the context id
+the agent returned, so the agent's calls belong to one context. It creates
+each message's id.
+
+| Key | |
+|---|---|
+| `server-url` | required: the A2A server's URL, where the agent's card is at `/.well-known/agent-card.json` |
+
+It imports `wasi:random` for message ids. An agent that cannot be reached when
+its toolset's tools are listed fails the listing, since the tool's metadata
+comes from the card.

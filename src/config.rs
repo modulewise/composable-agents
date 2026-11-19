@@ -1,9 +1,10 @@
-//! The `[model]` and `[agent]` config handlers.
+//! The `[model]`, `[agent]`, and `[a2a-tool]` config handlers.
 //!
 //! A model is a model-client component, chosen by its provider. An agent with
 //! a toolset is a tool-calling-agent component importing its model and
 //! toolset, and an agent without a toolset is a chat-agent component importing
-//! its model.
+//! its model. An A2A tool is an a2a-tool component importing the shared A2A
+//! client.
 
 use std::collections::HashMap;
 
@@ -28,14 +29,23 @@ const CHAT_COMPLETIONS_CLIENT: &str =
 const ANTHROPIC_MESSAGES_CLIENT: &str =
     "oci://localhost:5001/composable-agents/anthropic-messages-client:latest";
 
-/// The HTTP client every model client imports.
+/// Calls one agent on an A2A server, as a tool.
+const A2A_TOOL: &str = "oci://localhost:5001/composable-agents/a2a-tool:latest";
+
+/// The A2A client every A2A tool imports.
+const A2A_CLIENT: &str = "oci://localhost:5001/composable-agents/a2a-client:latest";
+
+/// The HTTP client every model client and the A2A client import.
 const HTTP_CLIENT: &str = "oci://ghcr.io/componentized/http/client:0.1.0";
+
+/// The shared A2A client component.
+const A2A_CLIENT_NAME: &str = "_a2a-client";
 
 /// The shared HTTP client component and the capability it imports.
 const HTTP_CLIENT_NAME: &str = "_http-client";
 const HTTP_CAPABILITY_NAME: &str = "_http";
 
-/// The shared random capability agents import for ids.
+/// The shared random capability agents and A2A tools import for ids.
 const RANDOM_CAPABILITY_NAME: &str = "_random";
 
 /// The shared clocks capability, imported by the Messages API client for retry
@@ -52,10 +62,11 @@ const OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
 const ANTHROPIC_API_KEY: &str = "${process:env:ANTHROPIC_API_KEY}";
 const OPENAI_API_KEY: &str = "${process:env:OPENAI_API_KEY}";
 
-/// Handles `[model.NAME]` and `[agent.NAME]`, each of which becomes a
-/// component named `NAME`.
+/// Handles `[model.NAME]`, `[agent.NAME]` and `[a2a-tool.NAME]`, each of which
+/// becomes a component named `NAME`.
 #[derive(Default)]
 pub(crate) struct AgentConfigHandler {
+    a2a_client_emitted: bool,
     http_emitted: bool,
     random_emitted: bool,
     clocks_emitted: bool,
@@ -63,7 +74,11 @@ pub(crate) struct AgentConfigHandler {
 
 impl ConfigHandler for AgentConfigHandler {
     fn claimed_categories(&self) -> Vec<CategoryClaim> {
-        vec![CategoryClaim::all("model"), CategoryClaim::all("agent")]
+        vec![
+            CategoryClaim::all("model"),
+            CategoryClaim::all("agent"),
+            CategoryClaim::all("a2a-tool"),
+        ]
     }
 
     fn claimed_properties(&self) -> HashMap<&str, &[&str]> {
@@ -98,6 +113,7 @@ impl ConfigHandler for AgentConfigHandler {
                 ]
                 .as_slice(),
             ),
+            ("a2a-tool", ["server-url"].as_slice()),
         ])
     }
 
@@ -110,6 +126,7 @@ impl ConfigHandler for AgentConfigHandler {
         match category.as_str() {
             "model" => self.model(&name, &mut properties),
             "agent" => self.agent(&name, &mut properties),
+            "a2a-tool" => self.a2a_tool(&name, &mut properties),
             other => bail!("AgentConfigHandler received unexpected category '{other}'"),
         }
     }
@@ -287,6 +304,37 @@ impl AgentConfigHandler {
         )];
         definitions.extend(self.random_wiring());
         Ok(definitions)
+    }
+
+    fn a2a_tool(&mut self, name: &str, properties: &mut PropertyMap) -> Result<Vec<Definition>> {
+        let context = format!("A2A tool '{name}'");
+        let server_url = required_string(&context, "server-url", properties)?;
+        let mut definitions = vec![component(
+            name,
+            json!({
+                "uri": A2A_TOOL,
+                "imports": [A2A_CLIENT_NAME, RANDOM_CAPABILITY_NAME],
+                "config": { "server-url": server_url },
+            }),
+        )];
+        definitions.extend(self.a2a_client_wiring());
+        definitions.extend(self.random_wiring());
+        Ok(definitions)
+    }
+
+    // The shared A2A client and the HTTP client it imports, unless already
+    // emitted.
+    fn a2a_client_wiring(&mut self) -> Vec<Definition> {
+        let mut definitions = Vec::new();
+        if !self.a2a_client_emitted {
+            self.a2a_client_emitted = true;
+            definitions.push(component(
+                A2A_CLIENT_NAME,
+                json!({ "uri": A2A_CLIENT, "imports": [HTTP_CLIENT_NAME] }),
+            ));
+        }
+        definitions.extend(self.http_wiring());
+        definitions
     }
 
     // The shared random capability, unless already emitted.
@@ -756,6 +804,81 @@ mod tests {
             .to_string();
         assert!(error.contains("unknown provider 'acme'"), "{error}");
         assert!(error.contains("anthropic, ollama, openai"), "{error}");
+    }
+
+    #[test]
+    fn an_a2a_tool_is_an_a2a_tool_component_importing_the_shared_client() {
+        let mut handler = AgentConfigHandler::default();
+        let produced = produced(
+            handler
+                .handle_definition(definition(
+                    "a2a-tool",
+                    "weather-agent",
+                    json!({ "server-url": "http://localhost:9091/" }),
+                ))
+                .unwrap(),
+        );
+        assert_eq!(
+            produced[&key("component", "weather-agent")],
+            json!({
+                "uri": A2A_TOOL,
+                "imports": ["_a2a-client", "_random"],
+                "config": { "server-url": "http://localhost:9091/" },
+            })
+        );
+        assert_eq!(
+            produced[&key("component", "_a2a-client")],
+            json!({ "uri": A2A_CLIENT, "imports": ["_http-client"] })
+        );
+        assert_eq!(
+            produced[&key("component", "_http-client")],
+            json!({ "uri": HTTP_CLIENT, "imports": ["_http"] })
+        );
+        assert_eq!(
+            produced[&key("capability", "_http")],
+            json!({ "type": "wasi:http" })
+        );
+        assert_eq!(
+            produced[&key("capability", "_random")],
+            json!({ "type": "wasi:random" })
+        );
+        assert_eq!(produced.len(), 5);
+    }
+
+    #[test]
+    fn a_second_a2a_tool_adds_only_its_own_component() {
+        let mut handler = AgentConfigHandler::default();
+        handler
+            .handle_definition(definition(
+                "a2a-tool",
+                "weather-agent",
+                json!({ "server-url": "http://localhost:9091/" }),
+            ))
+            .unwrap();
+        let produced = produced(
+            handler
+                .handle_definition(definition(
+                    "a2a-tool",
+                    "travel-agent",
+                    json!({ "server-url": "http://localhost:9092/" }),
+                ))
+                .unwrap(),
+        );
+        assert_eq!(produced.len(), 1);
+        assert!(produced.contains_key(&key("component", "travel-agent")));
+    }
+
+    #[test]
+    fn an_a2a_tool_requires_a_server_url() {
+        let mut handler = AgentConfigHandler::default();
+        let error = handler
+            .handle_definition(definition("a2a-tool", "weather-agent", json!({})))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("A2A tool 'weather-agent'") && error.contains("server-url"),
+            "{error}"
+        );
     }
 
     #[test]
