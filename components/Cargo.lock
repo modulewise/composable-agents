@@ -13,6 +13,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "a2a-tool"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "uuid",
+ "wit-bindgen",
+]
+
+[[package]]
 name = "agent-interceptor-support"
 version = "0.1.0"
 dependencies = [

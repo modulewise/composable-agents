@@ -17,8 +17,8 @@ The WIT they implement is in [components/agents](components/agents)
 
 ## Config
 
-`AgentService` handles `[model]` and `[agent]` definitions. Each becomes a
-component with the definition's name.
+`AgentService` handles `[model]`, `[agent]`, and `[a2a-tool]` definitions. Each
+becomes a component with the definition's name.
 
 ### `[model]`
 
@@ -63,6 +63,21 @@ instructions = "Answer in one or two sentences."
 
 An agent with a `toolset` is a `tool-calling-agent`, and one without a toolset
 is a `chat-agent` (see [components/agents](components/agents)).
+
+### `[a2a-tool]`
+
+```toml
+[a2a-tool.weather-agent]
+server-url = "http://localhost:9091"
+```
+
+| Property | Required | Description |
+|---|---|---|
+| `server-url` | yes | the URL of the A2A server that hosts the agent |
+
+An A2A tool is an `a2a-tool` component for one agent on an A2A server (see
+[components/a2a](components/a2a)). A `[toolset]` lists it by name, like any
+other tool.
 
 ## CLI
 

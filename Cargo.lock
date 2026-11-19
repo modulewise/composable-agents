@@ -413,7 +413,7 @@ dependencies = [
 [[package]]
 name = "composable-interceptor"
 version = "0.5.0-alpha.5"
-source = "git+https://github.com/modulewise/composable-runtime?branch=main#3d46ada28e2e8885e807a0f5de705d5563f3b75c"
+source = "git+https://github.com/modulewise/composable-runtime?branch=main#028c6d5855d18f66e3b2d2be5fe92f03121f3406"
 dependencies = [
  "anyhow",
  "clap",
@@ -428,7 +428,7 @@ dependencies = [
 [[package]]
 name = "composable-otel"
 version = "0.5.0-alpha.5"
-source = "git+https://github.com/modulewise/composable-runtime?branch=main#3d46ada28e2e8885e807a0f5de705d5563f3b75c"
+source = "git+https://github.com/modulewise/composable-runtime?branch=main#028c6d5855d18f66e3b2d2be5fe92f03121f3406"
 dependencies = [
  "anyhow",
  "composable-runtime",
@@ -446,7 +446,7 @@ dependencies = [
 [[package]]
 name = "composable-runtime"
 version = "0.5.0-alpha.5"
-source = "git+https://github.com/modulewise/composable-runtime?branch=main#3d46ada28e2e8885e807a0f5de705d5563f3b75c"
+source = "git+https://github.com/modulewise/composable-runtime?branch=main#028c6d5855d18f66e3b2d2be5fe92f03121f3406"
 dependencies = [
  "anyhow",
  "bytes",
@@ -476,7 +476,6 @@ dependencies = [
  "wasm-pkg-client",
  "wasmtime",
  "wasmtime-wasi",
- "wasmtime-wasi-config",
  "wasmtime-wasi-http",
  "wasmtime-wasi-io",
  "wit-component 0.263.0",
@@ -486,7 +485,7 @@ dependencies = [
 [[package]]
 name = "composable-tools"
 version = "0.5.0-alpha.5"
-source = "git+https://github.com/modulewise/composable-tools?branch=main#5f8bd4bfa396ecf42d3ade54847e1fb2bf9fc914"
+source = "git+https://github.com/modulewise/composable-tools?branch=main#ea2226f5426979881b3ab8f6ae53d0162fcdcb23"
 dependencies = [
  "anyhow",
  "composable-runtime",
@@ -4166,15 +4165,6 @@ dependencies = [
  "wasmtime-wasi-io",
  "wiggle",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "wasmtime-wasi-config"
-version = "50.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e444d377865760241b61371493efae6f03dbe135e33847a30ba5ec125925de19"
-dependencies = [
- "wasmtime",
 ]
 
 [[package]]

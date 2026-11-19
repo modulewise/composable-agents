@@ -1,6 +1,7 @@
 //! A2A's JSON, read into the WIT types and written from them. The JSON is
-//! ProtoJSON: field names are camelCase, and an enum value is its proto name
-//! (e.g. `TASK_STATE_WORKING`). A value the WIT holds as `json` is JSON text.
+//! ProtoJSON, in which field names are camelCase and an enum value is its proto
+//! name (e.g. `TASK_STATE_WORKING`). A value the WIT holds as `json` is JSON
+//! text.
 
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
@@ -823,8 +824,8 @@ mod wire {
         ArtifactUpdate(TaskArtifactUpdateEvent),
     }
 
-    // The page fields may be missing: ProtoJSON can leave out an empty string
-    // or a 0.
+    // The page fields may be missing, because ProtoJSON can leave out an empty
+    // string or a 0.
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     pub(super) struct ListTasksResponse {
@@ -946,7 +947,8 @@ mod wire {
         pub mtls_security_scheme: Option<MutualTlsSecurityScheme>,
     }
 
-    // A flow's scopes may be missing: ProtoJSON can leave out an empty map.
+    // A flow's scopes may be missing, because ProtoJSON can leave out an empty
+    // map.
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     pub(super) struct AuthorizationCodeOauthFlow {

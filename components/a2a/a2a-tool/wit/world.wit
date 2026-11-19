@@ -1,0 +1,10 @@
+package composable-agents:a2a-tool@0.1.0;
+
+/// One agent on an A2A server, as a tool. The server's URL comes from config.
+world a2a-tool {
+    import composable:a2a/client@0.1.0;
+    import wasi:config/store@0.2.0-rc.1;
+    import wasi:random/random@0.3.0;
+
+    export composable:tools/tool@0.2.0;
+}

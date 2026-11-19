@@ -1,0 +1,5 @@
+[overrides]
+"composable:a2a" = { path = "../wit" }
+"composable:agents" = { path = "../../agents/wit" }
+"composable:models" = { path = "../../models/wit" }
+"composable:tools" = { path = "./wit/overrides/composable-tools" }
