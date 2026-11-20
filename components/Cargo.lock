@@ -50,6 +50,7 @@ dependencies = [
 name = "agent-support"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "uuid",
  "wit-bindgen",
 ]

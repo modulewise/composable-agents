@@ -315,6 +315,51 @@ async fn an_error_from_the_agent_is_the_error_of_the_request_and_no_task_is_stor
     assert_eq!(listed.total_size, 0);
 }
 
+// A message with one part, a file that has `media_type` if given.
+fn file_message(id: &str, media_type: Option<&str>) -> Message {
+    serde_json::from_value(json!({
+        "messageId": id,
+        "role": "ROLE_USER",
+        "parts": [{ "raw": "dGNr", "mediaType": media_type }],
+    }))
+    .unwrap()
+}
+
+// The test agent's only input mode is `text/plain`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_part_with_a_media_type_that_is_not_an_input_mode_is_content_type_not_supported() {
+    let server = Server::start().await;
+    let error = server
+        .send_message(request(file_message("m1", Some("image/png"))))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, code::CONTENT_TYPE_NOT_SUPPORTED);
+    assert_eq!(
+        error.message,
+        "this agent does not support the media type image/png"
+    );
+    let error = server
+        .stream(request(file_message("m2", Some("image/png"))))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, code::CONTENT_TYPE_NOT_SUPPORTED);
+
+    // An input mode matches in any case, and with parameters.
+    let with_parameters = file_message("m3", Some("Text/Plain; charset=utf-8"));
+    let task = server.send(with_parameters).await;
+    assert_eq!(task.status.state, TaskState::Completed);
+
+    // A part with no media type is not checked.
+    let task = server.send(file_message("m4", None)).await;
+    assert_eq!(task.status.state, TaskState::Completed);
+
+    let listed = server
+        .list_tasks(ListTasksRequest::default())
+        .await
+        .unwrap();
+    assert_eq!(ids(&listed.tasks), ["task-m4", "task-m3"]);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_task_that_fails_has_the_reason_as_its_status_message() {
     let server = Server::start().await;

@@ -4,5 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+serde_json = { workspace = true }
 uuid = { version = "1", default-features = false }
 wit-bindgen = { workspace = true, features = ["async-spawn"] }

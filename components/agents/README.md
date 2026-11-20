@@ -58,6 +58,7 @@ already streamed remains as its artifact.
 | `description` | required: the agent's description, also used for its one skill |
 | `version` | required: the agent's version in its metadata |
 | `instructions` | optional: the model's instructions (`model-settings.instructions`) |
+| `input-modes` | default: `["text/plain"]`; a JSON array of the media types the agent accepts, as its metadata's `default-input-modes` |
 | `report-reasoning` | default: `false`; whether to emit the model's reasoning in status messages |
 
 ## tool-calling-agent
@@ -91,6 +92,7 @@ tool that didn't run, so every tool call in the history is answered.
 | `description` | required: the agent's description, also used for its one skill |
 | `version` | required: the agent's version in its metadata |
 | `instructions` | optional: the model's instructions (`model-settings.instructions`) |
+| `input-modes` | default: `["text/plain"]`; a JSON array of the media types the agent accepts, as its metadata's `default-input-modes` |
 | `max-turns` | default: 8; the most model calls allowed per invocation |
 | `report-reasoning` | default: `false`; whether to emit the model's reasoning in status messages |
 | `report-tool-calls` | default: `false`; whether to emit called tool names in status messages |

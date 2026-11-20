@@ -207,6 +207,7 @@ impl<T: TaskStore, E: ExchangeStore> RequestHandler<T, E> {
         if configuration.task_push_notification_config.is_some() {
             return Err(push_notifications_not_supported());
         }
+        self.check_input_modes(&request.message)?;
 
         let continued = self.continued_task(&request.message).await?;
         let context_id = match &continued {
@@ -401,6 +402,41 @@ impl<T: TaskStore, E: ExchangeStore> RequestHandler<T, E> {
         _context: &CallContext,
     ) -> Result<a2a::AgentCard, Error> {
         Err(no_extended_agent_card())
+    }
+
+    // Fails when a part of `message` has a media type that is not one of the
+    // agent's input modes. A part with no media type is not checked.
+    fn check_input_modes(&self, message: &a2a::Message) -> Result<(), Error> {
+        // A media type without its parameters, e.g. `text/plain; charset=utf-8`
+        // as `text/plain`.
+        fn without_parameters(media_type: &str) -> &str {
+            media_type.split(';').next().unwrap_or(media_type).trim()
+        }
+        let supported = |media_type: &str| {
+            let media_type = without_parameters(media_type);
+            let skill_modes = self
+                .metadata
+                .skills
+                .iter()
+                .flat_map(|skill| &skill.input_modes);
+            self.metadata
+                .default_input_modes
+                .iter()
+                .chain(skill_modes)
+                .any(|mode| without_parameters(mode).eq_ignore_ascii_case(media_type))
+        };
+        let unsupported = message
+            .parts
+            .iter()
+            .filter_map(|part| part.media_type.as_deref())
+            .find(|media_type| !supported(media_type));
+        match unsupported {
+            Some(media_type) => Err(Error::new(
+                code::CONTENT_TYPE_NOT_SUPPORTED,
+                format!("this agent does not support the media type {media_type}"),
+            )),
+            None => Ok(()),
+        }
     }
 
     // The interrupted task that `message` continues, or `None` when the

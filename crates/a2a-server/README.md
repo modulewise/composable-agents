@@ -70,6 +70,10 @@ skill with no tag, since A2A requires at least one of each.
   `VersionNotSupportedError`.
 - An `A2A-Extensions` header lists the extensions the client requests. The
   response's `A2A-Extensions` header lists those the agent activated.
+- A message part whose `mediaType` is not one of the agent's input modes (its
+  `default-input-modes` and each skill's `input-modes`) gets
+  `ContentTypeNotSupportedError`. A media type's parameters and case are
+  ignored. A part with no `mediaType` is not checked.
 - A response has status `200`, including a JSON-RPC error response.
 - A notification (a request with no `id`) is not handled, and gets `204`.
 - A body over 4 MiB gets `413`.
