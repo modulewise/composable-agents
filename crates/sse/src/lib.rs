@@ -1,6 +1,7 @@
 //! Server-sent events, parsed as the WHATWG HTML Standard defines them in
 //! "Parsing an event stream" (section 9.2.5) and
-//! "Interpreting an event stream" (section 9.2.6).
+//! "Interpreting an event stream" (section 9.2.6). An [`Event`] can also be
+//! written as the text of an event stream.
 
 use std::collections::VecDeque;
 
@@ -10,6 +11,33 @@ use std::collections::VecDeque;
 pub struct Event {
     pub event_type: Option<String>,
     pub data: String,
+}
+
+impl Event {
+    /// The event as the text of an event stream. It has an `event` field if
+    /// the event has a type, one `data` field for each line of the data, and
+    /// a blank line that ends the event. A type is written up to its first
+    /// line break, since a field's value is one line.
+    pub fn encode(&self) -> String {
+        let mut text = String::new();
+        let event_type = self
+            .event_type
+            .as_deref()
+            .and_then(|event_type| event_type.split(['\r', '\n']).next())
+            .filter(|event_type| !event_type.is_empty());
+        if let Some(event_type) = event_type {
+            text.push_str("event: ");
+            text.push_str(event_type);
+            text.push('\n');
+        }
+        for line in self.data.replace("\r\n", "\n").split(['\r', '\n']) {
+            text.push_str("data: ");
+            text.push_str(line);
+            text.push('\n');
+        }
+        text.push('\n');
+        text
+    }
 }
 
 /// Parses an event stream incrementally, yielding each event at the blank line
@@ -167,6 +195,28 @@ mod tests {
         Event {
             event_type: event_type.map(str::to_string),
             data: data.to_string(),
+        }
+    }
+
+    #[test]
+    fn an_event_is_encoded_with_a_data_field_for_each_line() {
+        assert_eq!(event(None, "hello").encode(), "data: hello\n\n");
+        assert_eq!(
+            event(Some("update"), "one\ntwo\r\nthree").encode(),
+            "event: update\ndata: one\ndata: two\ndata: three\n\n"
+        );
+    }
+
+    #[test]
+    fn an_encoded_event_is_parsed_as_the_same_event() {
+        for event in [
+            event(None, r#"{"jsonrpc":"2.0","id":1,"result":{}}"#),
+            event(Some("update"), "one\ntwo"),
+            event(None, " starts with a space"),
+            event(None, ""),
+        ] {
+            let parsed = Parser::default().feed(event.encode().as_bytes());
+            assert_eq!(parsed, [event]);
         }
     }
 

@@ -6,8 +6,12 @@
 //! Reading fails on a missing required field, on a `oneof` with no field or
 //! with several, and on an empty list where A2A requires at least one
 //! element. Writing leaves out an optional field that has no value.
+//!
+//! [`jsonrpc`] has the envelope of the JSON-RPC binding and its error codes.
 
 mod card;
+pub mod jsonrpc;
+mod push;
 mod requests;
 
 use serde::de::{Deserializer, Error as _};
@@ -21,9 +25,15 @@ pub use card::{
     MutualTlsSecurityScheme, Oauth2SecurityScheme, OauthFlows, OpenIdConnectSecurityScheme,
     PasswordOauthFlow, SecurityRequirement, SecurityScheme, StringList,
 };
+pub use push::{
+    AuthenticationInfo, DeleteTaskPushNotificationConfigRequest,
+    GetTaskPushNotificationConfigRequest, ListTaskPushNotificationConfigsRequest,
+    ListTaskPushNotificationConfigsResponse, TaskPushNotificationConfig,
+};
 pub use requests::{
-    CancelTaskRequest, GetTaskRequest, ListTasksRequest, ListTasksResponse,
-    SendMessageConfiguration, SendMessageRequest, SubscribeToTaskRequest, method,
+    CancelTaskRequest, GetExtendedAgentCardRequest, GetTaskRequest, ListTasksRequest,
+    ListTasksResponse, SendMessageConfiguration, SendMessageRequest, SubscribeToTaskRequest,
+    method,
 };
 
 /// The A2A protocol version these types follow.

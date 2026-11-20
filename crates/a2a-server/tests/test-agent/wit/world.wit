@@ -1,0 +1,5 @@
+package composable-agents:test-agent@0.1.0;
+
+world test-agent {
+    export composable:agents/agent@0.1.0;
+}

@@ -5,9 +5,15 @@ edition.workspace = true
 
 [dependencies]
 a2a-json = { path = "../a2a-json" }
+anyhow.workspace = true
 composable-agents = { path = "../.." }
+serde = "1"
 serde_json.workspace = true
 time = { version = "0.3", default-features = false, features = ["std", "formatting", "parsing"] }
+tokio = { version = "1", features = ["macros", "rt", "sync"] }
+tracing = "0.1"
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt"] }
+composable-runtime.workspace = true
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }

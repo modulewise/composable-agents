@@ -1,9 +1,8 @@
 //! The request messages of A2A's operations, and `ListTasksResponse`.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-use crate::{Message, Struct, Task, TaskState, is_false};
+use crate::{Message, Struct, Task, TaskPushNotificationConfig, TaskState, is_false};
 
 /// The name of each A2A operation, as the JSON-RPC binding's `method`.
 pub mod method {
@@ -38,10 +37,11 @@ pub struct SendMessageConfiguration {
     /// The media types the client accepts for response parts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accepted_output_modes: Vec<String>,
-    /// A `TaskPushNotificationConfig`, as sent.
+    /// Where to send push notifications for the task.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub task_push_notification_config: Option<Value>,
-    /// The most messages of the task's history to return. `None` is no limit.
+    pub task_push_notification_config: Option<TaskPushNotificationConfig>,
+    /// The maximum number of messages of the task's history to return, or
+    /// `None` for no limit.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub history_length: Option<i32>,
     /// Whether to return once the task is created, before it ends.
@@ -55,7 +55,8 @@ pub struct GetTaskRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tenant: Option<String>,
     pub id: String,
-    /// The most messages of the task's history to return. `None` is no limit.
+    /// The maximum number of messages of the task's history to return, or
+    /// `None` for no limit.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub history_length: Option<i32>,
 }
@@ -73,13 +74,14 @@ pub struct ListTasksRequest {
     pub page_size: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub page_token: Option<String>,
-    /// The most messages of each task's history to return.
+    /// The maximum number of messages of each task's history to return.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub history_length: Option<i32>,
-    /// An RFC 3339 timestamp. Only tasks whose status is as recent are listed.
+    /// Only tasks whose status time is this RFC 3339 timestamp or later are
+    /// listed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_timestamp_after: Option<String>,
-    /// Whether each task includes its artifacts. `None` is false.
+    /// Whether each task includes its artifacts. `None` means `false`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub include_artifacts: Option<bool>,
 }
@@ -115,6 +117,12 @@ pub struct SubscribeToTaskRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tenant: Option<String>,
     pub id: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct GetExtendedAgentCardRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
 }
 
 #[cfg(test)]

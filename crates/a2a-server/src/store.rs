@@ -27,9 +27,9 @@ pub struct TaskQuery {
     pub context_id: Option<String>,
     /// Only tasks in this state.
     pub state: Option<TaskState>,
-    /// Only tasks whose status is as recent as this RFC 3339 timestamp.
+    /// Only tasks whose status time is this RFC 3339 timestamp or later.
     pub status_timestamp_after: Option<String>,
-    /// The most tasks to return.
+    /// The maximum number of tasks to return.
     pub page_size: u32,
     /// The `next_page_token` of the page before the one to return, or `None`
     /// for the first page.
@@ -80,8 +80,9 @@ pub trait TaskStore: Send + Sync + 'static {
     fn list(&self, query: TaskQuery) -> impl Future<Output = StoreResult<TaskPage>> + Send;
 }
 
-/// The model exchanges of each context. An invocation in a context is given
-/// them as its history, and adds its own when it ends.
+/// The model exchanges of each context. A context's exchanges are the history
+/// of each invocation in that context, and an invocation's own exchanges are
+/// added when it ends.
 pub trait ExchangeStore: Send + Sync + 'static {
     /// The exchanges of the context with `context_id`, oldest first. Empty
     /// for a context the store doesn't have.

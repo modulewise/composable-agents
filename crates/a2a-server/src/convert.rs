@@ -40,9 +40,24 @@ fn agent_part(part: a2a::Part) -> agent::Part {
     }
 }
 
-// JSON text for a `json` field that is an object in A2A.
-fn json_text(object: Option<a2a::Struct>) -> Option<String> {
+/// JSON text for a `json` field that is an object in A2A.
+pub(crate) fn json_text(object: Option<a2a::Struct>) -> Option<String> {
     object.map(|object| Value::Object(object).to_string())
+}
+
+/// A task state from a client, for a query.
+pub(crate) fn agent_state(state: a2a::TaskState) -> agent::TaskState {
+    match state {
+        a2a::TaskState::Unspecified => agent::TaskState::Unspecified,
+        a2a::TaskState::Submitted => agent::TaskState::Submitted,
+        a2a::TaskState::Working => agent::TaskState::Working,
+        a2a::TaskState::Completed => agent::TaskState::Completed,
+        a2a::TaskState::Failed => agent::TaskState::Failed,
+        a2a::TaskState::Canceled => agent::TaskState::Canceled,
+        a2a::TaskState::InputRequired => agent::TaskState::InputRequired,
+        a2a::TaskState::Rejected => agent::TaskState::Rejected,
+        a2a::TaskState::AuthRequired => agent::TaskState::AuthRequired,
+    }
 }
 
 /// An event from the agent, as a stream response. Fails on JSON text that

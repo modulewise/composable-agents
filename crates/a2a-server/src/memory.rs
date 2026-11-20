@@ -19,9 +19,9 @@ pub const DEFAULT_TASK_CAPACITY: usize = 256;
 /// How many contexts an [`InMemoryExchangeStore`] keeps by default.
 pub const DEFAULT_CONTEXT_CAPACITY: usize = 256;
 
-/// Tasks kept in memory, up to a capacity. Past it, the store evicts the task
-/// in a terminal state whose status is oldest. With none of those, it evicts
-/// the oldest interrupted task (`input-required` or `auth-required`). It
+/// Tasks kept in memory, up to a capacity. Above that capacity, the store
+/// evicts the terminal task with the oldest status. If no task is terminal, it
+/// evicts the oldest interrupted task (`input-required` or `auth-required`). It
 /// never evicts a task that is `submitted` or `working`, so it holds more
 /// than its capacity while that many are active.
 pub struct InMemoryTaskStore {
@@ -99,8 +99,8 @@ fn evict(tasks: &mut HashMap<String, Entry>, capacity: usize) {
     }
 }
 
-// A page token names the last task of its page by the time of its status and
-// its id, which is where the next page starts after.
+// A page token has the status time and the id of the last task in its page.
+// The next page starts with the task that follows that one.
 fn page_token(status_time: OffsetDateTime, id: &str) -> String {
     format!("{}:{id}", status_time.unix_timestamp_nanos())
 }
@@ -239,10 +239,10 @@ impl TaskStore for InMemoryTaskStore {
 }
 
 /// Each context's model exchanges kept in memory, up to a capacity in
-/// contexts. Past it, the store evicts the context that was appended to least
-/// recently, and that context's conversation starts again.
+/// contexts. At that capacity, the store evicts the context whose most recent
+/// append is the oldest, and that context's conversation starts again.
 pub struct InMemoryExchangeStore {
-    // The contexts, the one appended to least recently first.
+    // The contexts, ordered by most recent append, oldest first.
     contexts: Mutex<VecDeque<(String, Vec<ModelExchange>)>>,
     capacity: usize,
 }

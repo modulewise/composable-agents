@@ -57,36 +57,15 @@ pub(crate) fn unrequested_required_extension<'a>(
 
 /// A JSON-RPC response's `result`, or the error it has instead.
 pub(crate) fn rpc_result(response: Value) -> Result<Value, Error> {
-    let Value::Object(mut response) = response else {
-        return Err("the agent's response is not a JSON-RPC response"
-            .to_string()
-            .into());
-    };
-    if let Some(error) = response.get("error").filter(|error| !error.is_null()) {
-        return Err(rpc_error(error));
-    }
-    response
-        .remove("result")
-        .ok_or_else(|| "the agent's response has no result".to_string().into())
-}
-
-// A JSON-RPC error object, with its code and data.
-fn rpc_error(error: &Value) -> Error {
-    Error {
-        message: error
-            .get("message")
-            .and_then(Value::as_str)
-            .unwrap_or("the agent returned an error with no message")
-            .to_string(),
-        code: error
-            .get("code")
-            .and_then(Value::as_i64)
-            .and_then(|code| i32::try_from(code).ok()),
+    let response: a2a_json::jsonrpc::Response = parsed(response, "response")?;
+    response.result.map_err(|error| Error {
+        message: error.message,
+        code: Some(error.code),
         data: error
-            .get("data")
+            .data
             .filter(|data| !data.is_null())
-            .map(Value::to_string),
-    }
+            .map(|data| data.to_string()),
+    })
 }
 
 /// A `Task` result.
@@ -788,7 +767,10 @@ mod tests {
         let error = rpc_result(json!({ "jsonrpc": "2.0", "id": 1 }))
             .err()
             .unwrap();
-        assert_eq!(error.message, "the agent's response has no result");
+        assert_eq!(
+            error.message,
+            "the agent's response is not valid: a response has none of its possible fields"
+        );
         assert_eq!(error.code, None);
     }
 

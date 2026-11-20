@@ -393,10 +393,15 @@ name = "composable-a2a-server"
 version = "0.1.0"
 dependencies = [
  "a2a-json",
+ "anyhow",
  "composable-agents",
+ "composable-runtime",
+ "serde",
  "serde_json",
  "time",
  "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
