@@ -10,7 +10,8 @@ use std::time::Duration;
 use a2a_json::jsonrpc::{Error, code};
 use a2a_json::{
     CancelTaskRequest, GetTaskRequest, ListTasksRequest, ListTasksResponse, Message, PartContent,
-    SendMessageConfiguration, SendMessageRequest, SendMessageResponse, Task, TaskState,
+    SendMessageConfiguration, SendMessageRequest, SendMessageResponse, StreamResponse,
+    SubscribeToTaskRequest, Task, TaskState,
 };
 use composable_a2a_server::{
     CallContext, InMemoryExchangeStore, InMemoryTaskStore, RequestHandler,
@@ -18,6 +19,7 @@ use composable_a2a_server::{
 use composable_agents::AgentHost;
 use composable_runtime::Runtime;
 use serde_json::json;
+use tokio::sync::mpsc;
 
 // The test agent as a component, built once.
 fn test_agent() -> &'static Path {
@@ -372,19 +374,194 @@ async fn a_task_that_fails_has_the_reason_as_its_status_message() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_agent_extensions_that_were_activated_are_set_on_the_call_context() {
+async fn the_extensions_the_agent_activated_are_set_on_the_call_context() {
     let server = Server::start().await;
+    // The test agent activates every extension a request asks for.
+    let requested = vec!["https://example.com/ext/a".to_string()];
     let mut context = CallContext {
-        requested_extensions: vec!["https://example.com/ext/a".to_string()],
-        activated_extensions: vec!["https://example.com/ext/earlier".to_string()],
+        requested_extensions: requested.clone(),
+        activated_extensions: Vec::new(),
     };
     server
         .handler
         .send_message(request(message("m1", "hello")), &mut context)
         .await
         .unwrap();
-    // The test agent activates none.
-    assert!(context.activated_extensions.is_empty());
+    assert_eq!(context.activated_extensions, requested);
+
+    let mut context = CallContext {
+        requested_extensions: requested.clone(),
+        activated_extensions: Vec::new(),
+    };
+    server
+        .handler
+        .send_streaming_message(request(message("m2", "hello")), &mut context)
+        .await
+        .unwrap();
+    assert_eq!(context.activated_extensions, requested);
+}
+
+// Each response of a stream until it ends, described in a few words.
+async fn responses(mut stream: mpsc::Receiver<StreamResponse>) -> Vec<String> {
+    let mut described = Vec::new();
+    while let Some(response) = stream.recv().await {
+        described.push(match response {
+            StreamResponse::Task(task) => format!("task {:?}", task.status.state),
+            StreamResponse::Message(_) => "message".to_string(),
+            StreamResponse::StatusUpdate(update) => format!("status {:?}", update.status.state),
+            StreamResponse::ArtifactUpdate(update) => format!(
+                "artifact {:?} append={} last={}",
+                text(&update.artifact.parts),
+                update.append,
+                update.last_chunk
+            ),
+        });
+    }
+    described
+}
+
+impl Server {
+    async fn stream(
+        &self,
+        request: SendMessageRequest,
+    ) -> Result<mpsc::Receiver<StreamResponse>, Error> {
+        self.handler
+            .send_streaming_message(request, &mut CallContext::default())
+            .await
+    }
+
+    async fn subscribe(&self, id: &str) -> Result<mpsc::Receiver<StreamResponse>, Error> {
+        let request = SubscribeToTaskRequest {
+            tenant: None,
+            id: id.to_string(),
+        };
+        self.handler
+            .subscribe_to_task(request, &CallContext::default())
+            .await
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_streaming_message_has_the_task_then_each_update_then_the_final_status() {
+    let server = Server::start().await;
+    let stream = server.stream(request(message("m1", "chunks"))).await;
+    assert_eq!(
+        responses(stream.unwrap()).await,
+        [
+            "task Submitted",
+            "status Working",
+            "artifact \"one \" append=false last=false",
+            "artifact \"two\" append=true last=true",
+            "status Completed",
+        ]
+    );
+
+    // The stored task has the artifact as the agent assembled it.
+    let task = server.get_task("task-m1", None).await.unwrap();
+    assert_eq!(task.status.state, TaskState::Completed);
+    assert_eq!(task.artifacts.len(), 1);
+    assert_eq!(task.artifacts[0].parts.len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_task_of_a_stream_has_no_more_history_than_the_request_allows() {
+    let server = Server::start().await;
+    let configuration = SendMessageConfiguration {
+        history_length: Some(0),
+        ..SendMessageConfiguration::default()
+    };
+    let mut stream = server
+        .stream(configured(message("m1", "hello"), configuration))
+        .await
+        .unwrap();
+    let Some(StreamResponse::Task(task)) = stream.recv().await else {
+        panic!("expected the task first");
+    };
+    assert!(task.history.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_streaming_message_the_agent_refuses_has_an_error_and_no_stream() {
+    let server = Server::start().await;
+    let error = server
+        .stream(request(message("m1", "refuse")))
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, code::CONTENT_TYPE_NOT_SUPPORTED);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn each_subscriber_of_a_running_task_has_the_task_then_its_later_updates() {
+    let server = Server::start().await;
+    let first = server.stream(request(message("m1", "wait"))).await.unwrap();
+    let second = server.subscribe("task-m1").await.unwrap();
+    server.cancel_task("task-m1").await.unwrap();
+
+    assert_eq!(
+        responses(first).await,
+        ["task Submitted", "status Working", "status Canceled"]
+    );
+    // The second stream begins with the task as it was when it subscribed,
+    // so the `working` status is in that task or is its own response.
+    let second = responses(second).await;
+    assert!(
+        second == ["task Working", "status Canceled"]
+            || second == ["task Submitted", "status Working", "status Canceled"],
+        "{second:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_subscription_to_an_interrupted_task_has_the_task_and_ends() {
+    let server = Server::start().await;
+    server.send(message("m1", "ask")).await;
+    let stream = server.subscribe("task-m1").await.unwrap();
+    assert_eq!(responses(stream).await, ["task InputRequired"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_subscription_to_an_unknown_or_a_terminal_task_is_an_error() {
+    let server = Server::start().await;
+    let error = server.subscribe("task-none").await.unwrap_err();
+    assert_eq!(error.code, code::TASK_NOT_FOUND);
+
+    server.send(message("m1", "hello")).await;
+    let error = server.subscribe("task-m1").await.unwrap_err();
+    assert_eq!(error.code, code::UNSUPPORTED_OPERATION);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_event_for_another_task_fails_the_task() {
+    let server = Server::start().await;
+    let stream = server.stream(request(message("m1", "other task"))).await;
+    // The agent's own final status is not sent after the failure.
+    assert_eq!(
+        responses(stream.unwrap()).await,
+        ["task Submitted", "status Working", "status Failed"]
+    );
+    let task = server.get_task("task-m1", None).await.unwrap();
+    assert_eq!(task.status.state, TaskState::Failed);
+    assert_eq!(
+        status_text(&task),
+        "the agent sent an event for another task"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_task_runs_to_its_end_after_its_stream_is_closed() {
+    let server = Server::start().await;
+    let stream = server.stream(request(message("m1", "chunks"))).await;
+    drop(stream.unwrap());
+
+    let mut state = TaskState::Submitted;
+    for _ in 0..200 {
+        state = server.get_task("task-m1", None).await.unwrap().status.state;
+        if state == TaskState::Completed {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(state, TaskState::Completed);
 }
 
 #[tokio::test(flavor = "multi_thread")]

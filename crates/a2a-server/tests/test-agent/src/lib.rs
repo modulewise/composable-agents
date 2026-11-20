@@ -7,11 +7,14 @@
 //! - `wait`: the task is `working` until it is canceled.
 //! - `think`: it sends a `working` status with a message, then the task
 //!   completes.
+//! - `chunks`: it sends an artifact in two chunks, then the task completes.
 //! - `no parts`: it sends an artifact with no parts, which A2A doesn't allow.
+//! - `other task`: it sends an event with another task's id.
 //! - any other text: the task completes with an artifact that has the text
 //!   and the number of exchanges in the request's history.
 //!
-//! A message that continues an interrupted task completes the task.
+//! A message that continues an interrupted task completes the task. The agent
+//! activates every extension a request asks for.
 
 wit_bindgen::generate!({
     path: ["../../../../components/agents/wit", "wit"],
@@ -101,7 +104,7 @@ impl exports::composable::agents::agent::Guest for Component {
         let invocation = AgentInvocation {
             task_id: ids.task_id.clone(),
             context_id: ids.context_id.clone(),
-            activated_extensions: Vec::new(),
+            activated_extensions: request.requested_extensions.clone(),
             response: AgentResponseStream { events, result },
         };
         spawn_local(async move {
@@ -153,12 +156,35 @@ async fn run(
             cancel.await;
             outcome(ids, TaskState::Canceled, None, Vec::new(), text)
         }
+        "chunks" => {
+            let first = text_artifact("one ".to_string());
+            let second = text_artifact("two".to_string());
+            let whole = Artifact {
+                parts: vec![text_part("one ".to_string()), text_part("two".to_string())],
+                ..first.clone()
+            };
+            let _ = events
+                .write_one(chunk_event(ids, first, false, false))
+                .await;
+            let _ = events.write_one(chunk_event(ids, second, true, true)).await;
+            outcome(ids, TaskState::Completed, None, vec![whole], text)
+        }
         "no parts" => {
             let artifact = Artifact {
                 parts: Vec::new(),
                 ..text_artifact(String::new())
             };
             let _ = events.write_one(artifact_event(ids, artifact)).await;
+            outcome(ids, TaskState::Completed, None, Vec::new(), text)
+        }
+        "other task" => {
+            let other = Ids {
+                task_id: "task-other".to_string(),
+                context_id: ids.context_id.clone(),
+            };
+            let _ = events
+                .write_one(status_event(&other, TaskState::Working, None))
+                .await;
             outcome(ids, TaskState::Completed, None, Vec::new(), text)
         }
         _ => {
@@ -245,12 +271,17 @@ fn status(ids: &Ids, state: TaskState, text: Option<&str>) -> TaskStatus {
 
 // An artifact sent whole, as its only chunk.
 fn artifact_event(ids: &Ids, artifact: Artifact) -> AgentEvent {
+    chunk_event(ids, artifact, false, true)
+}
+
+// A chunk of an artifact.
+fn chunk_event(ids: &Ids, artifact: Artifact, append: bool, last_chunk: bool) -> AgentEvent {
     AgentEvent::Artifact(TaskArtifactUpdateEvent {
         task_id: ids.task_id.clone(),
         context_id: ids.context_id.clone(),
         artifact,
-        append: false,
-        last_chunk: true,
+        append,
+        last_chunk,
         metadata: None,
     })
 }

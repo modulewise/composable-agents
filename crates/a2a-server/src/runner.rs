@@ -1,10 +1,12 @@
 //! Runs of the agent. Each message the agent accepts runs as its own spawned
-//! task, which applies the agent's events and outcome to the stores. A
-//! request observes a run, by waiting for it to end or by canceling it.
+//! task, which applies the agent's events and outcome to the stores and
+//! publishes them to the run's subscribers. A request observes a run, by
+//! waiting for it to end, by subscribing to it, or by canceling it.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use a2a_json as a2a;
 use a2a_json::jsonrpc::{Error, code};
 use composable_agents::types::{
     AgentError, AgentEvent, AgentRequest, AgentResponse, Message, Part, PartContent, Role, Task,
@@ -13,10 +15,19 @@ use composable_agents::types::{
 use composable_agents::{AcceptedTask, AgentHost, Outcome};
 use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::convert::{a2a_artifact, a2a_event, a2a_status, timestamped};
+use crate::convert::{a2a_artifact, a2a_event, a2a_status, a2a_task, timestamped, trimmed};
 use crate::store::{
     ExchangeStore, StoreError, StoreResult, TaskStore, is_interrupted, is_terminal,
 };
+
+/// How many responses can wait for a subscriber to read them. A subscriber
+/// whose buffer is full is removed, which ends its stream.
+pub(crate) const SUBSCRIBER_BUFFER: usize = 256;
+
+// A run's subscribers. The lock is held while an event is applied to the store
+// and published, and while a subscriber is sent the stored task and added. So
+// each event reaches a subscriber once, in the task or as a response.
+type Subscribers = Arc<tokio::sync::Mutex<Vec<mpsc::Sender<a2a::StreamResponse>>>>;
 
 /// Runs one agent, with the stores its runs update.
 pub(crate) struct Runner<T, E> {
@@ -34,6 +45,7 @@ struct Run {
     cancel: Option<oneshot::Sender<()>>,
     // Becomes `true` when the run ends.
     done: watch::Receiver<bool>,
+    subscribers: Subscribers,
 }
 
 impl<T: TaskStore, E: ExchangeStore> Runner<T, E> {
@@ -52,17 +64,73 @@ impl<T: TaskStore, E: ExchangeStore> Runner<T, E> {
     /// a new task, or with `continued` the task the request names, with the
     /// request's message added to its history. Fails with the agent's error
     /// when it does not accept the request, and then no task is stored.
+    ///
+    /// A `subscriber` is sent the task as stored when the agent accepts, with
+    /// at most `history_length` messages of its history, and then every
+    /// response of the run.
     pub(crate) async fn start(
         self: &Arc<Self>,
         request: AgentRequest,
         continued: bool,
+        subscriber: Option<mpsc::Sender<a2a::StreamResponse>>,
+        history_length: Option<usize>,
     ) -> Result<AcceptedTask, Error> {
         let (accepted_tx, accepted_rx) = oneshot::channel();
         let runner = self.clone();
-        tokio::spawn(async move { runner.run(request, continued, accepted_tx).await });
+        tokio::spawn(async move {
+            runner
+                .run(request, continued, subscriber, history_length, accepted_tx)
+                .await
+        });
         accepted_rx
             .await
             .unwrap_or_else(|_| Err(internal("the agent's run stopped before it accepted")))
+    }
+
+    /// Subscribes to the run of the task with `task_id`. The `subscriber` is
+    /// sent the task as stored, and then every response the run publishes
+    /// after that. Returns `false` when no run of that task is in progress.
+    pub(crate) async fn subscribe(
+        &self,
+        task_id: &str,
+        subscriber: mpsc::Sender<a2a::StreamResponse>,
+    ) -> Result<bool, Error> {
+        let subscribers = self
+            .running
+            .lock()
+            .unwrap()
+            .get(task_id)
+            .map(|run| run.subscribers.clone());
+        let Some(subscribers) = subscribers else {
+            return Ok(false);
+        };
+        let mut subscribers = subscribers.lock().await;
+        self.add_subscriber(&mut subscribers, task_id, subscriber, None)
+            .await?;
+        Ok(true)
+    }
+
+    // Sends `subscriber` the task as stored, with at most `history_length`
+    // messages of its history, then adds it to `subscribers`.
+    async fn add_subscriber(
+        &self,
+        subscribers: &mut Vec<mpsc::Sender<a2a::StreamResponse>>,
+        task_id: &str,
+        subscriber: mpsc::Sender<a2a::StreamResponse>,
+        history_length: Option<usize>,
+    ) -> Result<(), Error> {
+        let task = self
+            .tasks
+            .get(task_id)
+            .await
+            .map_err(store_error)?
+            .ok_or_else(|| internal("the task is no longer stored"))?;
+        let task = a2a_task(task).map_err(|e| Error::new(code::INVALID_AGENT_RESPONSE, e))?;
+        let task = trimmed(task, history_length);
+        if subscriber.try_send(a2a::StreamResponse::Task(task)).is_ok() {
+            subscribers.push(subscriber);
+        }
+        Ok(())
     }
 
     /// Waits until the run of the task with `task_id` ends. Returns at once
@@ -100,6 +168,8 @@ impl<T: TaskStore, E: ExchangeStore> Runner<T, E> {
         self: Arc<Self>,
         request: AgentRequest,
         continued: bool,
+        subscriber: Option<mpsc::Sender<a2a::StreamResponse>>,
+        history_length: Option<usize>,
         accepted_tx: oneshot::Sender<Result<AcceptedTask, Error>>,
     ) {
         let message = request.message.clone();
@@ -107,6 +177,7 @@ impl<T: TaskStore, E: ExchangeStore> Runner<T, E> {
         // run ends, in `apply` first and then in the run's entry in `running`.
         let (cancel_tx, cancel_rx) = oneshot::channel::<()>();
         let (done_tx, done_rx) = watch::channel(false);
+        let subscribers = Subscribers::default();
         // The callbacks cannot await the stores, so they send the task and
         // each event to `apply`.
         let (task_tx, task_rx) = oneshot::channel();
@@ -136,16 +207,28 @@ impl<T: TaskStore, E: ExchangeStore> Runner<T, E> {
             } else {
                 self.tasks.insert(new_task(&task, message)).await
             };
+            let mut stored = stored.map_err(store_error);
+            // The request's subscriber is added before any event is applied,
+            // so it is sent every event of the run.
+            if stored.is_ok()
+                && let Some(subscriber) = subscriber
+            {
+                let mut subscribers = subscribers.lock().await;
+                stored = self
+                    .add_subscriber(&mut subscribers, &task.task_id, subscriber, history_length)
+                    .await;
+            }
             self.running.lock().unwrap().insert(
                 task.task_id.clone(),
                 Run {
                     cancel: Some(cancel_tx),
                     done: done_rx,
+                    subscribers: subscribers.clone(),
                 },
             );
-            let _ = accepted_tx.send(stored.map(|()| task.clone()).map_err(store_error));
+            let _ = accepted_tx.send(stored.map(|()| task.clone()));
             while let Some(event) = events_rx.recv().await {
-                self.apply_event(event).await;
+                self.apply_event(&subscribers, &task, event).await;
             }
             Ok(task)
         };
@@ -153,7 +236,7 @@ impl<T: TaskStore, E: ExchangeStore> Runner<T, E> {
 
         match applied {
             Ok(task) => {
-                self.end(&task, outcome).await;
+                self.end(&subscribers, &task, outcome).await;
                 self.running.lock().unwrap().remove(&task.task_id);
             }
             Err((accepted_tx, _cancel_tx)) => {
@@ -168,11 +251,12 @@ impl<T: TaskStore, E: ExchangeStore> Runner<T, E> {
         let _ = done_tx.send(true);
     }
 
-    // Applies an event to its task. A status is given a timestamp. The message
-    // of an interrupted or terminal status is added to the task's history,
-    // and the message of any other status is not. An event that A2A cannot
-    // represent fails the task and cancels the run.
-    async fn apply_event(&self, event: AgentEvent) {
+    // Applies an event to the run's task and publishes it. A status is given a
+    // timestamp. The message of an interrupted or terminal status is added to
+    // the task's history, and the message of any other status is not. An
+    // event for another task, or one that A2A cannot represent, fails the
+    // task and cancels the run.
+    async fn apply_event(&self, subscribers: &Subscribers, task: &AcceptedTask, event: AgentEvent) {
         let event = match event {
             AgentEvent::Status(mut event) => {
                 event.status = timestamped(event.status);
@@ -184,43 +268,55 @@ impl<T: TaskStore, E: ExchangeStore> Runner<T, E> {
             AgentEvent::Status(event) => (&event.task_id, &event.context_id),
             AgentEvent::Artifact(event) => (&event.task_id, &event.context_id),
         };
-        if let Err(reason) = a2a_event(event.clone()) {
-            self.fail(task_id, context_id, reason).await;
-            if let Some(cancel) = self
-                .running
-                .lock()
-                .unwrap()
-                .get_mut(task_id)
-                .and_then(|run| run.cancel.take())
-            {
-                let _ = cancel.send(());
+        let response = if (task_id, context_id) == (&task.task_id, &task.context_id) {
+            a2a_event(event.clone())
+        } else {
+            Err("the agent sent an event for another task".to_string())
+        };
+        let mut subscribers = subscribers.lock().await;
+        let response = match response {
+            Ok(response) => response,
+            Err(reason) => {
+                self.fail(&mut subscribers, task, reason).await;
+                if let Some(cancel) = self
+                    .running
+                    .lock()
+                    .unwrap()
+                    .get_mut(&task.task_id)
+                    .and_then(|run| run.cancel.take())
+                {
+                    let _ = cancel.send(());
+                }
+                return;
             }
-            return;
-        }
+        };
         if let AgentEvent::Status(event) = &event
             && (is_terminal(event.status.state) || is_interrupted(event.status.state))
             && let Some(message) = &event.status.message
         {
-            logged(self.tasks.add_history(task_id, message.clone()).await);
+            logged(self.tasks.add_history(&task.task_id, message.clone()).await);
         }
         logged(self.tasks.apply(event).await);
+        publish(&mut subscribers, response);
     }
 
     // Applies a run's outcome to its task, including the final status and
     // assembled artifacts, and the invocation's exchanges added to the
-    // context. A run that failed, or an outcome that A2A cannot represent,
-    // fails the task.
-    async fn end(&self, task: &AcceptedTask, outcome: anyhow::Result<Outcome>) {
+    // context. Publishes the final status. A run that failed, or an outcome
+    // that A2A cannot represent, fails the task.
+    async fn end(
+        &self,
+        subscribers: &Subscribers,
+        task: &AcceptedTask,
+        outcome: anyhow::Result<Outcome>,
+    ) {
+        let mut subscribers = subscribers.lock().await;
         let response = match outcome {
             Ok(Ok(response)) => response,
-            Ok(Err(error)) => {
-                return self
-                    .fail(&task.task_id, &task.context_id, error.message)
-                    .await;
-            }
+            Ok(Err(error)) => return self.fail(&mut subscribers, task, error.message).await,
             Err(error) => {
                 let reason = format!("the agent failed: {error}");
-                return self.fail(&task.task_id, &task.context_id, reason).await;
+                return self.fail(&mut subscribers, task, reason).await;
             }
         };
         let AgentResponse {
@@ -230,25 +326,59 @@ impl<T: TaskStore, E: ExchangeStore> Runner<T, E> {
             ..
         } = response;
         logged(self.exchanges.append(&task.context_id, exchanges).await);
+        // An event may already have failed the task, and that status is
+        // final.
+        if self.is_terminal(&task.task_id).await {
+            return;
+        }
 
         let status = timestamped(status);
-        let valid = a2a_status(status.clone()).and_then(|_| {
+        let valid = a2a_status(status.clone()).and_then(|final_status| {
             artifacts
                 .iter()
                 .cloned()
-                .try_for_each(|artifact| a2a_artifact(artifact).map(|_| ()))
+                .try_for_each(|artifact| a2a_artifact(artifact).map(|_| ()))?;
+            Ok(final_status)
         });
-        if let Err(reason) = valid {
-            return self.fail(&task.task_id, &task.context_id, reason).await;
-        }
+        let final_status = match valid {
+            Ok(final_status) => final_status,
+            Err(reason) => return self.fail(&mut subscribers, task, reason).await,
+        };
         if let Some(message) = &status.message {
             logged(self.tasks.add_history(&task.task_id, message.clone()).await);
         }
         logged(self.tasks.finish(&task.task_id, status, artifacts).await);
+        publish(
+            &mut subscribers,
+            a2a::StreamResponse::StatusUpdate(a2a::TaskStatusUpdateEvent {
+                task_id: task.task_id.clone(),
+                context_id: task.context_id.clone(),
+                status: final_status,
+                metadata: None,
+            }),
+        );
     }
 
-    // Sets the task's status to `failed`, with `reason` as its message.
-    async fn fail(&self, task_id: &str, context_id: &str, reason: String) {
+    // Whether the stored task with `task_id` is in a terminal state.
+    async fn is_terminal(&self, task_id: &str) -> bool {
+        matches!(
+            self.tasks.get(task_id).await,
+            Ok(Some(task)) if is_terminal(task.status.state)
+        )
+    }
+
+    // Sets the task's status to `failed`, with `reason` as its message, and
+    // publishes that status. Does nothing for a task in a terminal state.
+    async fn fail(
+        &self,
+        subscribers: &mut Vec<mpsc::Sender<a2a::StreamResponse>>,
+        task: &AcceptedTask,
+        reason: String,
+    ) {
+        if self.is_terminal(&task.task_id).await {
+            return;
+        }
+        let (task_id, context_id) = (&task.task_id, &task.context_id);
         let message = Message {
             message_id: uuid::Uuid::new_v4().to_string(),
             context_id: Some(context_id.to_string()),
@@ -276,8 +406,21 @@ impl<T: TaskStore, E: ExchangeStore> Runner<T, E> {
             status,
             metadata: None,
         });
+        let response = a2a_event(event.clone());
         logged(self.tasks.apply(event).await);
+        if let Ok(response) = response {
+            publish(subscribers, response);
+        }
     }
+}
+
+// Sends `response` to each subscriber. Removes a subscriber that has stopped
+// reading, or whose buffer is full.
+fn publish(
+    subscribers: &mut Vec<mpsc::Sender<a2a::StreamResponse>>,
+    response: a2a::StreamResponse,
+) {
+    subscribers.retain(|subscriber| subscriber.try_send(response.clone()).is_ok());
 }
 
 // The task to store when the agent accepts a request. Its state is

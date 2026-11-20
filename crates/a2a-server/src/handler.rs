@@ -4,15 +4,16 @@ use std::sync::Arc;
 
 use a2a_json as a2a;
 use a2a_json::jsonrpc::{Error, code};
-use composable_agents::AgentHost;
 use composable_agents::types::{
     AgentEvent, AgentRequest, Task, TaskState, TaskStatus, TaskStatusUpdateEvent,
 };
+use composable_agents::{AcceptedTask, AgentHost};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
+use tokio::sync::mpsc;
 
-use crate::convert::{a2a_task, agent_message, agent_state, json_text, timestamped};
-use crate::runner::{Runner, internal, store_error};
+use crate::convert::{a2a_task, agent_message, agent_state, json_text, timestamped, trimmed};
+use crate::runner::{Runner, SUBSCRIBER_BUFFER, internal, store_error};
 use crate::store::{ExchangeStore, TaskQuery, TaskStore, is_interrupted, is_terminal};
 
 // The page size of `ListTasks` when the request does not specify one, and the
@@ -52,8 +53,88 @@ impl<T: TaskStore, E: ExchangeStore> RequestHandler<T, E> {
         request: a2a::SendMessageRequest,
         context: &mut CallContext,
     ) -> Result<a2a::SendMessageResponse, Error> {
+        let configuration = request.configuration.as_ref();
+        let return_immediately = configuration.is_some_and(|c| c.return_immediately);
+        let history_length = history_length(configuration.and_then(|c| c.history_length))?;
+        let accepted = self.start(request, context, None, history_length).await?;
+        if !return_immediately {
+            self.runner.wait(&accepted.task_id).await;
+        }
+        let task = self
+            .stored_task(&accepted.task_id)
+            .await?
+            .ok_or_else(|| internal("the task is no longer stored"))?;
+        Ok(a2a::SendMessageResponse::Task(a2a_json_task(
+            task,
+            history_length,
+        )?))
+    }
+
+    /// Starts a run of the agent with the message, and returns the stream of
+    /// its responses. The stream begins with the task, then has each status
+    /// and artifact update, and ends when the task is terminal or
+    /// interrupted. `returnImmediately` has no effect.
+    pub async fn send_streaming_message(
+        &self,
+        request: a2a::SendMessageRequest,
+        context: &mut CallContext,
+    ) -> Result<mpsc::Receiver<a2a::StreamResponse>, Error> {
+        let configuration = request.configuration.as_ref();
+        let history_length = history_length(configuration.and_then(|c| c.history_length))?;
+        let (subscriber, responses) = mpsc::channel(SUBSCRIBER_BUFFER);
+        self.start(request, context, Some(subscriber), history_length)
+            .await?;
+        Ok(responses)
+    }
+
+    /// Returns the stream of responses for a task that is not terminal. The
+    /// stream begins with the task as stored. For a task with a run in
+    /// progress, it then has each later status and artifact update, and ends
+    /// when the task is terminal or interrupted. An interrupted task has no
+    /// run, so its stream ends after the task.
+    pub async fn subscribe_to_task(
+        &self,
+        request: a2a::SubscribeToTaskRequest,
+        _context: &CallContext,
+    ) -> Result<mpsc::Receiver<a2a::StreamResponse>, Error> {
+        let task = self
+            .stored_task(&request.id)
+            .await?
+            .ok_or_else(|| task_not_found(&request.id))?;
+        if is_terminal(task.status.state) {
+            return Err(Error::new(
+                code::UNSUPPORTED_OPERATION,
+                format!("task {} is in a terminal state", request.id),
+            ));
+        }
+        let (subscriber, responses) = mpsc::channel(SUBSCRIBER_BUFFER);
+        if !self
+            .runner
+            .subscribe(&request.id, subscriber.clone())
+            .await?
+        {
+            let task = self
+                .stored_task(&request.id)
+                .await?
+                .ok_or_else(|| task_not_found(&request.id))?;
+            let task = a2a_json_task(task, None)?;
+            let _ = subscriber.try_send(a2a::StreamResponse::Task(task));
+        }
+        Ok(responses)
+    }
+
+    // Starts a run of the agent with the request's message, and sets the
+    // context's activated extensions. A `subscriber` is sent the task, with
+    // at most `history_length` messages of its history, and then the run's
+    // responses.
+    async fn start(
+        &self,
+        request: a2a::SendMessageRequest,
+        context: &mut CallContext,
+        subscriber: Option<mpsc::Sender<a2a::StreamResponse>>,
+        history_length: Option<usize>,
+    ) -> Result<AcceptedTask, Error> {
         let configuration = request.configuration.unwrap_or_default();
-        let history_length = history_length(configuration.history_length)?;
         if configuration.task_push_notification_config.is_some() {
             return Err(push_notifications_not_supported());
         }
@@ -92,20 +173,15 @@ impl<T: TaskStore, E: ExchangeStore> RequestHandler<T, E> {
 
         let accepted = self
             .runner
-            .start(agent_request, continued.is_some())
+            .start(
+                agent_request,
+                continued.is_some(),
+                subscriber,
+                history_length,
+            )
             .await?;
-        context.activated_extensions = accepted.activated_extensions;
-        if !configuration.return_immediately {
-            self.runner.wait(&accepted.task_id).await;
-        }
-        let task = self
-            .stored_task(&accepted.task_id)
-            .await?
-            .ok_or_else(|| internal("the task is no longer stored"))?;
-        Ok(a2a::SendMessageResponse::Task(a2a_json_task(
-            task,
-            history_length,
-        )?))
+        context.activated_extensions = accepted.activated_extensions.clone();
+        Ok(accepted)
     }
 
     pub async fn get_task(
@@ -318,17 +394,6 @@ fn a2a_json_task(task: Task, history_length: Option<usize>) -> Result<a2a::Task,
     Ok(trimmed(task, history_length))
 }
 
-// `task` with the most recent `history_length` messages of its history, or
-// with all of them when it is `None`.
-fn trimmed(mut task: a2a::Task, history_length: Option<usize>) -> a2a::Task {
-    if let Some(length) = history_length
-        && task.history.len() > length
-    {
-        task.history.drain(..task.history.len() - length);
-    }
-    task
-}
-
 fn task_not_found(id: &str) -> Error {
     Error::new(code::TASK_NOT_FOUND, format!("no task with id {id}"))
 }
@@ -342,44 +407,7 @@ fn push_notifications_not_supported() -> Error {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::{Value, json};
-
     use super::*;
-
-    fn task_with_history(ids: &[&str]) -> a2a::Task {
-        let messages: Vec<Value> = ids
-            .iter()
-            .map(|id| json!({ "messageId": id, "role": "ROLE_USER", "parts": [{ "text": "hi" }] }))
-            .collect();
-        serde_json::from_value(json!({
-            "id": "t1",
-            "status": { "state": "TASK_STATE_COMPLETED" },
-            "history": messages,
-        }))
-        .unwrap()
-    }
-
-    fn history_ids(task: &a2a::Task) -> Vec<&str> {
-        task.history
-            .iter()
-            .map(|message| message.message_id.as_str())
-            .collect()
-    }
-
-    #[test]
-    fn a_task_is_trimmed_to_its_most_recent_messages() {
-        let task = task_with_history(&["m1", "m2", "m3"]);
-        assert_eq!(
-            history_ids(&trimmed(task.clone(), None)),
-            ["m1", "m2", "m3"]
-        );
-        assert_eq!(
-            history_ids(&trimmed(task.clone(), Some(5))),
-            ["m1", "m2", "m3"]
-        );
-        assert_eq!(history_ids(&trimmed(task.clone(), Some(2))), ["m2", "m3"]);
-        assert!(trimmed(task, Some(0)).history.is_empty());
-    }
 
     #[test]
     fn a_negative_history_length_is_not_valid() {

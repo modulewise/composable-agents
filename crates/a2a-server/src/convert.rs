@@ -123,6 +123,17 @@ pub(crate) fn a2a_task(task: agent::Task) -> Result<a2a::Task, String> {
     })
 }
 
+/// `task` with the most recent `history_length` messages of its history, or
+/// with all of them when it is `None`.
+pub(crate) fn trimmed(mut task: a2a::Task, history_length: Option<usize>) -> a2a::Task {
+    if let Some(length) = history_length
+        && task.history.len() > length
+    {
+        task.history.drain(..task.history.len() - length);
+    }
+    task
+}
+
 fn a2a_state(state: agent::TaskState) -> a2a::TaskState {
     match state {
         agent::TaskState::Unspecified => a2a::TaskState::Unspecified,
@@ -250,6 +261,41 @@ mod tests {
             metadata: None,
             extensions: Vec::new(),
         }
+    }
+
+    fn task_with_history(ids: &[&str]) -> a2a::Task {
+        let messages: Vec<Value> = ids
+            .iter()
+            .map(|id| json!({ "messageId": id, "role": "ROLE_USER", "parts": [{ "text": "hi" }] }))
+            .collect();
+        serde_json::from_value(json!({
+            "id": "t1",
+            "status": { "state": "TASK_STATE_COMPLETED" },
+            "history": messages,
+        }))
+        .unwrap()
+    }
+
+    fn history_ids(task: &a2a::Task) -> Vec<&str> {
+        task.history
+            .iter()
+            .map(|message| message.message_id.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn a_task_is_trimmed_to_its_most_recent_messages() {
+        let task = task_with_history(&["m1", "m2", "m3"]);
+        assert_eq!(
+            history_ids(&trimmed(task.clone(), None)),
+            ["m1", "m2", "m3"]
+        );
+        assert_eq!(
+            history_ids(&trimmed(task.clone(), Some(5))),
+            ["m1", "m2", "m3"]
+        );
+        assert_eq!(history_ids(&trimmed(task.clone(), Some(2))), ["m2", "m3"]);
+        assert!(trimmed(task, Some(0)).history.is_empty());
     }
 
     #[test]
