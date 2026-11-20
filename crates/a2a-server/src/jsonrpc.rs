@@ -37,6 +37,9 @@ pub(crate) async fn handle<T: TaskStore, E: ExchangeStore>(
     request: axum::extract::Request,
 ) -> axum::response::Response {
     let (parts, body) = request.into_parts();
+    if !has_json_content_type(&parts.headers) {
+        return status_response(StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
     let body = match to_bytes(body, MAX_BODY).await {
         Ok(body) => body,
         Err(error) => {
@@ -211,6 +214,16 @@ fn result(result: impl Serialize) -> Result<Value, Error> {
 // null. A request with no id is a notification.
 fn valid_id(id: Option<&Value>) -> bool {
     id.is_none_or(|id| id.is_string() || id.is_number() || id.is_null())
+}
+
+// Whether the request's content type is `application/json`, with or without
+// parameters.
+fn has_json_content_type(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("application/json"))
 }
 
 // The A2A version a request names in its header, else in its query, else the

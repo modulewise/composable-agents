@@ -167,6 +167,7 @@ async fn a_request_that_is_not_a_json_rpc_request_has_an_error_with_a_null_id() 
         .client
         .post(&server.url)
         .header("A2A-Version", "1.0")
+        .header("Content-Type", "application/json")
         .body("{not json")
         .send()
         .await
@@ -337,9 +338,42 @@ async fn a_body_over_the_size_limit_is_payload_too_large() {
         .client
         .post(&server.url)
         .header("A2A-Version", "1.0")
+        .header("Content-Type", "application/json")
         .body(body)
         .send()
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_whose_content_type_is_not_json_is_unsupported_media_type() {
+    let server = Server::start().await;
+    let body = request("SendMessage", message("m1", "hello")).to_string();
+    for content_type in [Some("text/plain"), None] {
+        let mut request = server
+            .client
+            .post(&server.url)
+            .header("A2A-Version", "1.0")
+            .body(body.clone());
+        if let Some(content_type) = content_type {
+            request = request.header("Content-Type", content_type);
+        }
+        let response = request.send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    // The media type matches in any case, and with parameters.
+    let response = server
+        .client
+        .post(&server.url)
+        .header("A2A-Version", "1.0")
+        .header("Content-Type", "Application/JSON; charset=utf-8")
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response: Value = response.json().await.unwrap();
+    assert_eq!(response["result"]["task"]["id"], "task-m1");
 }

@@ -76,6 +76,7 @@ skill with no tag, since A2A requires at least one of each.
   ignored. A part with no `mediaType` is not checked.
 - A response has status `200`, including a JSON-RPC error response.
 - A notification (a request with no `id`) is not handled, and gets `204`.
+- A request with any other `Content-Type`, or none, gets `415`.
 - A body over 4 MiB gets `413`.
 
 | Operation | |
