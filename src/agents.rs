@@ -17,7 +17,7 @@ use wasmtime::component::{FutureConsumer, FutureReader, Source, StreamConsumer, 
 
 use crate::bindings::BaseAgent;
 use crate::bindings::composable::agents::types::{
-    AgentError, AgentEvent, AgentRequest, AgentResponse,
+    AgentError, AgentEvent, AgentMetadata, AgentRequest, AgentResponse,
 };
 
 /// The interface a component exports to be used as an agent. Matching
@@ -94,6 +94,25 @@ impl AgentHost {
             listed.push((agent.clone(), metadata));
         }
         Ok(listed)
+    }
+
+    /// The `agent-metadata` of `agent`. Fails with the agent's message when
+    /// its `metadata` returns an error.
+    pub async fn metadata(&self, agent: &str) -> Result<AgentMetadata> {
+        if !self.agents.iter().any(|name| name == agent) {
+            bail!("unknown agent '{agent}'");
+        }
+        let mut instance = self.host.instantiate(agent, None).await?;
+        instance
+            .run_concurrent(async move |accessor, instance| -> Result<AgentMetadata> {
+                let bindings = accessor.with(|mut store| BaseAgent::new(&mut store, &instance))?;
+                bindings
+                    .composable_agents_agent()
+                    .call_metadata(accessor)
+                    .await?
+                    .map_err(|message| anyhow!("{message}"))
+            })
+            .await?
     }
 
     /// Invoke `agent` with `request` and return the outcome. When the agent

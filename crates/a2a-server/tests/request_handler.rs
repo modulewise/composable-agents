@@ -1,10 +1,8 @@
-//! The request handler, run against the test agent in `tests/test-agent`. The
-//! test agent is built as a component the first time a test needs it, which
-//! requires the `wasm32-unknown-unknown` target and `wasm-tools`.
+//! The request handler's operations, run against the test agent in
+//! `tests/test-agent`.
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::{Arc, OnceLock};
+mod common;
+
 use std::time::Duration;
 
 use a2a_json::jsonrpc::{Error, code};
@@ -13,63 +11,23 @@ use a2a_json::{
     SendMessageConfiguration, SendMessageRequest, SendMessageResponse, StreamResponse,
     SubscribeToTaskRequest, Task, TaskState,
 };
-use composable_a2a_server::{
-    CallContext, InMemoryExchangeStore, InMemoryTaskStore, RequestHandler,
-};
-use composable_agents::AgentHost;
+use composable_a2a_server::CallContext;
 use composable_runtime::Runtime;
 use serde_json::json;
 use tokio::sync::mpsc;
 
-// The test agent as a component, built once.
-fn test_agent() -> &'static Path {
-    static COMPONENT: OnceLock<PathBuf> = OnceLock::new();
-    COMPONENT.get_or_init(|| {
-        let package = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/test-agent");
-        let target = "wasm32-unknown-unknown";
-        run(Command::new("cargo")
-            .args(["build", "--release", "--target", target])
-            .current_dir(&package));
-        let core = package.join(format!("target/{target}/release/test_agent.wasm"));
-        let component = package.join("target/test-agent.wasm");
-        run(Command::new("wasm-tools")
-            .args(["component", "new"])
-            .arg(&core)
-            .arg("-o")
-            .arg(&component));
-        component
-    })
-}
-
-fn run(command: &mut Command) {
-    let status = command.status().expect("the command starts");
-    assert!(status.success(), "{command:?} failed");
-}
-
 // A request handler for the test agent, with the runtime that hosts the
 // agent.
 struct Server {
-    handler: RequestHandler<InMemoryTaskStore, InMemoryExchangeStore>,
+    handler: common::Handler,
     _runtime: Runtime,
 }
 
 impl Server {
     async fn start() -> Self {
-        // The component's name is its file's name without the extension.
-        let runtime = Runtime::builder()
-            .from_paths(&[test_agent().to_path_buf()])
-            .build()
-            .await
-            .unwrap();
-        runtime.start().unwrap();
-        let host = Arc::new(AgentHost::new(runtime.host(), None));
+        let (handler, runtime) = common::test_agent_handler().await;
         Server {
-            handler: RequestHandler::new(
-                host,
-                "test-agent",
-                InMemoryTaskStore::default(),
-                InMemoryExchangeStore::default(),
-            ),
+            handler,
             _runtime: runtime,
         }
     }

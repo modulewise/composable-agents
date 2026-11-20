@@ -4,14 +4,17 @@ use std::sync::Arc;
 
 use a2a_json as a2a;
 use a2a_json::jsonrpc::{Error, code};
+use a2a_json::method;
+use anyhow::anyhow;
 use composable_agents::types::{
-    AgentEvent, AgentRequest, Task, TaskState, TaskStatus, TaskStatusUpdateEvent,
+    AgentEvent, AgentMetadata, AgentRequest, Task, TaskState, TaskStatus, TaskStatusUpdateEvent,
 };
 use composable_agents::{AcceptedTask, AgentHost};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use tokio::sync::mpsc;
 
+use crate::card;
 use crate::convert::{a2a_task, agent_message, agent_state, json_text, timestamped, trimmed};
 use crate::runner::{Runner, SUBSCRIBER_BUFFER, internal, store_error};
 use crate::store::{ExchangeStore, TaskQuery, TaskStore, is_interrupted, is_terminal};
@@ -35,13 +38,79 @@ pub struct CallContext {
 /// Handles A2A's operations for one agent. Each method is one operation.
 pub struct RequestHandler<T, E> {
     runner: Arc<Runner<T, E>>,
+    metadata: AgentMetadata,
+    capabilities: a2a::AgentCapabilities,
 }
 
 impl<T: TaskStore, E: ExchangeStore> RequestHandler<T, E> {
-    /// A handler for `agent`, one of `host`'s agents, with its stores.
-    pub fn new(host: Arc<AgentHost>, agent: impl Into<String>, tasks: T, exchanges: E) -> Self {
-        RequestHandler {
-            runner: Arc::new(Runner::new(host, agent.into(), tasks, exchanges)),
+    /// A handler for `agent`, one of `host`'s agents, with its stores. Reads
+    /// the agent's metadata, and fails if the agent returns an error for it.
+    pub async fn new(
+        host: Arc<AgentHost>,
+        agent: impl Into<String>,
+        tasks: T,
+        exchanges: E,
+    ) -> anyhow::Result<Self> {
+        let agent = agent.into();
+        let metadata = host.metadata(&agent).await?;
+        let capabilities = card::capabilities(&metadata).map_err(|e| anyhow!("{agent}: {e}"))?;
+        Ok(RequestHandler {
+            runner: Arc::new(Runner::new(host, agent, tasks, exchanges)),
+            metadata,
+            capabilities,
+        })
+    }
+
+    /// The agent's card, with its JSON-RPC interface at `url`. Fails when a
+    /// list that A2A requires to have at least one element is empty in the
+    /// agent's metadata.
+    pub fn agent_card(&self, url: &str) -> Result<a2a::AgentCard, String> {
+        card::agent_card(self.metadata.clone(), self.capabilities.clone(), url)
+    }
+
+    /// Checks that the operation named `method` may be called. Fails with the
+    /// operation's error when it needs a capability the card does not
+    /// declare. For the two send operations, fails when the client did not
+    /// request an extension that the card marks as required.
+    pub fn validate(&self, method: &str, context: &CallContext) -> Result<(), Error> {
+        let declared = |capability: Option<bool>| capability == Some(true);
+        match method {
+            method::CREATE_TASK_PUSH_NOTIFICATION_CONFIG
+            | method::GET_TASK_PUSH_NOTIFICATION_CONFIG
+            | method::LIST_TASK_PUSH_NOTIFICATION_CONFIGS
+            | method::DELETE_TASK_PUSH_NOTIFICATION_CONFIG
+                if !declared(self.capabilities.push_notifications) =>
+            {
+                Err(push_notifications_not_supported())
+            }
+            method::SEND_STREAMING_MESSAGE | method::SUBSCRIBE_TO_TASK
+                if !declared(self.capabilities.streaming) =>
+            {
+                Err(Error::new(
+                    code::UNSUPPORTED_OPERATION,
+                    "this agent does not support streaming",
+                ))
+            }
+            method::GET_EXTENDED_AGENT_CARD if !declared(self.capabilities.extended_agent_card) => {
+                Err(no_extended_agent_card())
+            }
+            method::SEND_MESSAGE | method::SEND_STREAMING_MESSAGE => {
+                let missing = self
+                    .capabilities
+                    .extensions
+                    .iter()
+                    .filter(|extension| extension.required)
+                    .filter_map(|extension| extension.uri.as_ref())
+                    .find(|uri| !context.requested_extensions.contains(uri));
+                match missing {
+                    Some(uri) => Err(Error::new(
+                        code::EXTENSION_SUPPORT_REQUIRED,
+                        format!("this agent requires the extension {uri}"),
+                    )),
+                    None => Ok(()),
+                }
+            }
+            _ => Ok(()),
         }
     }
 
@@ -331,10 +400,7 @@ impl<T: TaskStore, E: ExchangeStore> RequestHandler<T, E> {
         _request: a2a::GetExtendedAgentCardRequest,
         _context: &CallContext,
     ) -> Result<a2a::AgentCard, Error> {
-        Err(Error::new(
-            code::UNSUPPORTED_OPERATION,
-            "this agent has no extended agent card",
-        ))
+        Err(no_extended_agent_card())
     }
 
     // The interrupted task that `message` continues, or `None` when the
@@ -396,6 +462,13 @@ fn a2a_json_task(task: Task, history_length: Option<usize>) -> Result<a2a::Task,
 
 fn task_not_found(id: &str) -> Error {
     Error::new(code::TASK_NOT_FOUND, format!("no task with id {id}"))
+}
+
+fn no_extended_agent_card() -> Error {
+    Error::new(
+        code::UNSUPPORTED_OPERATION,
+        "this agent has no extended agent card",
+    )
 }
 
 fn push_notifications_not_supported() -> Error {
