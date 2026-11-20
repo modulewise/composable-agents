@@ -1,0 +1,5 @@
+# An A2A server that serves exactly one agent defined in the loaded config.
+
+[server.assistant]
+type = "a2a"
+port = 4001

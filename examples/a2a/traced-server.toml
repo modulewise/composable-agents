@@ -1,0 +1,4 @@
+[server.assistant]
+type = "a2a"
+port = 4001
+agent-selector = "name=traced-assistant"
