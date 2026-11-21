@@ -17,6 +17,21 @@ pub mod method {
     pub const LIST_TASK_PUSH_NOTIFICATION_CONFIGS: &str = "ListTaskPushNotificationConfigs";
     pub const DELETE_TASK_PUSH_NOTIFICATION_CONFIG: &str = "DeleteTaskPushNotificationConfig";
     pub const GET_EXTENDED_AGENT_CARD: &str = "GetExtendedAgentCard";
+
+    /// Every A2A method.
+    pub const ALL: [&str; 11] = [
+        SEND_MESSAGE,
+        SEND_STREAMING_MESSAGE,
+        GET_TASK,
+        LIST_TASKS,
+        CANCEL_TASK,
+        SUBSCRIBE_TO_TASK,
+        CREATE_TASK_PUSH_NOTIFICATION_CONFIG,
+        GET_TASK_PUSH_NOTIFICATION_CONFIG,
+        LIST_TASK_PUSH_NOTIFICATION_CONFIGS,
+        DELETE_TASK_PUSH_NOTIFICATION_CONFIG,
+        GET_EXTENDED_AGENT_CARD,
+    ];
 }
 
 /// The request of `SendMessage` and `SendStreamingMessage`.

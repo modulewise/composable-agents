@@ -2,3 +2,4 @@
 type = "a2a"
 port = 4001
 agent-selector = "name=traced-assistant"
+otlp-endpoint = "http://localhost:4317"

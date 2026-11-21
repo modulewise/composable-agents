@@ -4,13 +4,17 @@
 //! JSON-RPC responses.
 
 use std::convert::Infallible;
+use std::time::SystemTime;
 
 use a2a_json as a2a;
 use a2a_json::jsonrpc::{Error, Request, Response, VERSION, code};
 use a2a_json::method;
 use axum::body::{Body, Bytes, to_bytes};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use composable_runtime::{PROPAGATION_CONTEXT, PropagationContext};
 use http_body_util::LengthLimitError;
+use opentelemetry::KeyValue;
+use opentelemetry_sdk::trace::SdkTracer;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -19,6 +23,7 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::handler::{CallContext, RequestHandler};
+use crate::span::{ServerSpan, SpanAttributes, agent_attributes};
 use crate::store::{ExchangeStore, TaskStore};
 
 // The largest request body that is read.
@@ -34,8 +39,10 @@ const UNSPECIFIED_VERSION: &str = "0.3";
 /// Handles an HTTP request to an agent's JSON-RPC endpoint.
 pub(crate) async fn handle<T: TaskStore, E: ExchangeStore>(
     handler: &RequestHandler<T, E>,
+    tracer: Option<&SdkTracer>,
     request: axum::extract::Request,
 ) -> axum::response::Response {
+    let received_at = SystemTime::now();
     let (parts, body) = request.into_parts();
     if !has_json_content_type(&parts.headers) {
         return status_response(StatusCode::UNSUPPORTED_MEDIA_TYPE);
@@ -69,8 +76,23 @@ pub(crate) async fn handle<T: TaskStore, E: ExchangeStore>(
     let Some(id) = request.id else {
         return status_response(StatusCode::NO_CONTENT);
     };
+    if !method::ALL.contains(&request.method.as_str()) {
+        let error = Error::new(
+            code::METHOD_NOT_FOUND,
+            format!("method not found: {}", request.method),
+        );
+        return json_response(Response::error(id, error), &[]);
+    }
 
+    // The span starts at the time the request was received.
+    let mut span = ServerSpan::start(tracer, &request.method, received_at, &parts.headers);
     let version = requested_version(&parts.headers, parts.uri.query());
+    span.record(agent_attributes(handler.metadata()));
+    span.record(vec![KeyValue::new("a2a.protocol.version", version.clone())]);
+    if let Some(request_id) = request_id(&id) {
+        span.record(vec![KeyValue::new("jsonrpc.request.id", request_id)]);
+    }
+
     if !supports_version(&version) {
         let error = Error::new(
             code::VERSION_NOT_SUPPORTED,
@@ -79,30 +101,56 @@ pub(crate) async fn handle<T: TaskStore, E: ExchangeStore>(
                 a2a::PROTOCOL_VERSION
             ),
         );
-        return json_response(Response::error(id, error), &[]);
+        return failed(id, error, span);
     }
     let mut context = CallContext {
         requested_extensions: requested_extensions(&parts.headers),
         activated_extensions: Vec::new(),
     };
     if let Err(error) = handler.validate(&request.method, &context) {
-        return json_response(Response::error(id, error), &[]);
+        return failed(id, error, span);
     }
 
+    // The work of the operation is traced beneath the span.
+    let propagation = PropagationContext {
+        entries: span.context(),
+    };
     let params = request.params.unwrap_or(Value::Null);
     match request.method.as_str() {
         method::SEND_STREAMING_MESSAGE | method::SUBSCRIBE_TO_TASK => {
-            match stream(handler, &request.method, params, &mut context).await {
-                Ok(responses) => event_stream(id, responses, &context.activated_extensions),
+            let streamed = stream(handler, &request.method, params, &mut context, &mut span);
+            match PROPAGATION_CONTEXT.scope(Some(propagation), streamed).await {
+                Ok(responses) => event_stream(id, responses, &context.activated_extensions, span),
                 // A streaming operation that fails before it has a stream has
                 // one response.
-                Err(error) => json_response(Response::error(id, error), &[]),
+                Err(error) => failed(id, error, span),
             }
         }
         _ => {
-            let result = call(handler, &request.method, params, &mut context).await;
+            let called = call(handler, &request.method, params, &mut context, &mut span);
+            let result = PROPAGATION_CONTEXT.scope(Some(propagation), called).await;
+            if let Err(error) = &result {
+                span.fail(error);
+            }
+            span.end();
             json_response(Response { id, result }, &context.activated_extensions)
         }
+    }
+}
+
+// The response with `error`, after it is recorded on the span.
+fn failed(id: Value, error: Error, mut span: ServerSpan) -> axum::response::Response {
+    span.fail(&error);
+    span.end();
+    json_response(Response::error(id, error), &[])
+}
+
+// The request's id as a string, or `None` for a null id.
+fn request_id(id: &Value) -> Option<String> {
+    match id {
+        Value::String(id) => Some(id.clone()),
+        Value::Number(id) => Some(id.to_string()),
+        _ => None,
     }
 }
 
@@ -113,50 +161,60 @@ async fn stream<T: TaskStore, E: ExchangeStore>(
     method: &str,
     params: Value,
     context: &mut CallContext,
+    span: &mut ServerSpan,
 ) -> Result<mpsc::Receiver<a2a::StreamResponse>, Error> {
     if method == method::SEND_STREAMING_MESSAGE {
-        handler
-            .send_streaming_message(parsed(params)?, context)
-            .await
+        let request = parsed(params, span)?;
+        handler.send_streaming_message(request, context).await
     } else {
-        handler.subscribe_to_task(parsed(params)?, context).await
+        let request = parsed(params, span)?;
+        handler.subscribe_to_task(request, context).await
     }
 }
 
 // Calls the operation named `method` that has one response, and returns its
-// result as JSON.
+// result as JSON. Records the attributes of the request and the response on
+// `span`.
 async fn call<T: TaskStore, E: ExchangeStore>(
     handler: &RequestHandler<T, E>,
     method: &str,
     params: Value,
     context: &mut CallContext,
+    span: &mut ServerSpan,
 ) -> Result<Value, Error> {
     match method {
-        method::SEND_MESSAGE => result(handler.send_message(parsed(params)?, context).await?),
-        method::GET_TASK => result(handler.get_task(parsed(params)?, context).await?),
+        method::SEND_MESSAGE => {
+            let request = parsed(params, span)?;
+            recorded(handler.send_message(request, context).await?, span)
+        }
+        method::GET_TASK => {
+            let request = parsed(params, span)?;
+            recorded(handler.get_task(request, context).await?, span)
+        }
         method::LIST_TASKS => {
-            let request = parsed_or_default(params)?;
+            let request = parsed_or_default(params, span)?;
             result(handler.list_tasks(request, context).await?)
         }
-        method::CANCEL_TASK => result(handler.cancel_task(parsed(params)?, context).await?),
+        method::CANCEL_TASK => {
+            let request = parsed(params, span)?;
+            recorded(handler.cancel_task(request, context).await?, span)
+        }
         method::CREATE_TASK_PUSH_NOTIFICATION_CONFIG => {
-            let request = parsed(params)?;
-            result(
-                handler
-                    .create_task_push_notification_config(request, context)
-                    .await?,
-            )
+            let request = parsed(params, span)?;
+            let config = handler
+                .create_task_push_notification_config(request, context)
+                .await?;
+            recorded(config, span)
         }
         method::GET_TASK_PUSH_NOTIFICATION_CONFIG => {
-            let request = parsed(params)?;
-            result(
-                handler
-                    .get_task_push_notification_config(request, context)
-                    .await?,
-            )
+            let request = parsed(params, span)?;
+            let config = handler
+                .get_task_push_notification_config(request, context)
+                .await?;
+            recorded(config, span)
         }
         method::LIST_TASK_PUSH_NOTIFICATION_CONFIGS => {
-            let request = parsed(params)?;
+            let request = parsed(params, span)?;
             result(
                 handler
                     .list_task_push_notification_configs(request, context)
@@ -164,14 +222,14 @@ async fn call<T: TaskStore, E: ExchangeStore>(
             )
         }
         method::DELETE_TASK_PUSH_NOTIFICATION_CONFIG => {
-            let request = parsed(params)?;
+            let request = parsed(params, span)?;
             handler
                 .delete_task_push_notification_config(request, context)
                 .await?;
             Ok(json!({}))
         }
         method::GET_EXTENDED_AGENT_CARD => {
-            let request = parsed_or_default(params)?;
+            let request = parsed_or_default(params, span)?;
             result(handler.get_extended_agent_card(request, context).await?)
         }
         other => Err(Error::new(
@@ -181,23 +239,43 @@ async fn call<T: TaskStore, E: ExchangeStore>(
     }
 }
 
-// `params` as the request of an operation.
-fn parsed<P: DeserializeOwned>(params: Value) -> Result<P, Error> {
-    serde_json::from_value(params).map_err(|e| {
+// `params` as the request of an operation, with its attributes recorded on
+// `span`.
+fn parsed<P: DeserializeOwned + SpanAttributes>(
+    params: Value,
+    span: &mut ServerSpan,
+) -> Result<P, Error> {
+    let request: P = serde_json::from_value(params).map_err(|e| {
         Error::new(
             code::INVALID_PARAMS,
             format!("the params are not valid: {e}"),
         )
-    })
+    })?;
+    span.record(request.attributes());
+    Ok(request)
 }
 
 // `params` as the request of an operation whose fields are all optional, so
 // that a request with no params is valid.
-fn parsed_or_default<P: DeserializeOwned + Default>(params: Value) -> Result<P, Error> {
+fn parsed_or_default<P: DeserializeOwned + Default + SpanAttributes>(
+    params: Value,
+    span: &mut ServerSpan,
+) -> Result<P, Error> {
     if params.is_null() {
-        return Ok(P::default());
+        let request = P::default();
+        span.record(request.attributes());
+        return Ok(request);
     }
-    parsed(params)
+    parsed(params, span)
+}
+
+// The result of an operation as JSON, with its attributes recorded on `span`.
+fn recorded(
+    response: impl Serialize + SpanAttributes,
+    span: &mut ServerSpan,
+) -> Result<Value, Error> {
+    span.record(response.attributes());
+    result(response)
 }
 
 // The result of an operation as JSON.
@@ -284,13 +362,24 @@ fn json_response(response: Response, activated_extensions: &[String]) -> axum::r
 }
 
 // An event stream with a JSON-RPC response for each of `responses`, each with
-// the request's `id`.
+// the request's `id`. The span ends when the stream ends (when it is dropped).
 fn event_stream(
     id: Value,
     responses: mpsc::Receiver<a2a::StreamResponse>,
     activated_extensions: &[String],
+    mut span: ServerSpan,
 ) -> axum::response::Response {
     let events = ReceiverStream::new(responses).map(move |response| {
+        // A stream transitions through task states, so the span has none.
+        if let a2a::StreamResponse::Task(task) = &response {
+            let attributes = task.attributes();
+            span.record(
+                attributes
+                    .into_iter()
+                    .filter(|attribute| attribute.key.as_str() != "a2a.task.state")
+                    .collect(),
+            );
+        }
         let response = Response::result(id.clone(), json!(response));
         let event = sse::Event {
             event_type: None,

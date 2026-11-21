@@ -12,6 +12,10 @@ use serde_json::Value;
 
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 4001;
+const DEFAULT_OTLP_PROTOCOL: &str = "grpc";
+
+/// The OTLP protocols a server can export spans with.
+pub const OTLP_PROTOCOLS: [&str; 2] = ["grpc", "http/protobuf"];
 
 /// A parsed A2A server definition.
 #[derive(Debug, Clone)]
@@ -24,6 +28,11 @@ pub struct A2aServerConfig {
     /// The URL of the server's JSON-RPC interface in the agent's card. `None`
     /// is `http://<host>:<port>`.
     pub url: Option<String>,
+    /// The OTLP endpoint the server exports its spans to. `None` exports no
+    /// spans.
+    pub otlp_endpoint: Option<String>,
+    /// The OTLP protocol, `grpc` or `http/protobuf`.
+    pub otlp_protocol: String,
 }
 
 impl A2aServerConfig {
@@ -45,6 +54,8 @@ pub fn default_server() -> A2aServerConfig {
         port: DEFAULT_PORT,
         agent_selector: None,
         url: None,
+        otlp_endpoint: None,
+        otlp_protocol: DEFAULT_OTLP_PROTOCOL.to_string(),
     }
 }
 
@@ -75,7 +86,16 @@ impl ConfigHandler for A2aServerConfigHandler {
     fn claimed_properties(&self) -> HashMap<&str, &[&str]> {
         HashMap::from([(
             "server",
-            ["type", "host", "port", "agent-selector", "url"].as_slice(),
+            [
+                "type",
+                "host",
+                "port",
+                "agent-selector",
+                "url",
+                "otlp-endpoint",
+                "otlp-protocol",
+            ]
+            .as_slice(),
         )])
     }
 
@@ -109,6 +129,14 @@ impl ConfigHandler for A2aServerConfigHandler {
             })
             .transpose()?;
         let url = optional_string(&name, "url", &mut properties)?;
+        let otlp_endpoint = optional_string(&name, "otlp-endpoint", &mut properties)?;
+        let otlp_protocol = optional_string(&name, "otlp-protocol", &mut properties)?
+            .unwrap_or_else(|| DEFAULT_OTLP_PROTOCOL.to_string());
+        if !OTLP_PROTOCOLS.contains(&otlp_protocol.as_str()) {
+            bail!(
+                "Server '{name}': 'otlp-protocol' must be 'grpc' or 'http/protobuf', got '{otlp_protocol}'"
+            );
+        }
 
         if !properties.is_empty() {
             let unknown: Vec<_> = properties.keys().collect();
@@ -120,6 +148,8 @@ impl ConfigHandler for A2aServerConfigHandler {
             port,
             agent_selector,
             url,
+            otlp_endpoint,
+            otlp_protocol,
         });
         Ok(Vec::new())
     }
@@ -169,16 +199,20 @@ mod tests {
         assert_eq!((server.host.as_str(), server.port), ("127.0.0.1", 4002));
         assert!(server.agent_selector.is_none());
         assert_eq!(server.interface_url(), "http://127.0.0.1:4002");
+        assert!(server.otlp_endpoint.is_none());
+        assert_eq!(server.otlp_protocol, "grpc");
     }
 
     #[test]
-    fn a_server_has_its_host_selector_and_url_when_set() {
+    fn a_server_has_its_host_selector_url_and_otlp_settings_when_set() {
         let servers = handled(json!({
             "type": "a2a",
             "port": 4002,
             "host": "0.0.0.0",
             "agent-selector": "name=assistant",
             "url": "https://agents.example.com/assistant",
+            "otlp-endpoint": "http://localhost:4318/v1/traces",
+            "otlp-protocol": "http/protobuf",
         }))
         .unwrap();
         let server = &servers[0];
@@ -188,6 +222,11 @@ mod tests {
             server.interface_url(),
             "https://agents.example.com/assistant"
         );
+        assert_eq!(
+            server.otlp_endpoint.as_deref(),
+            Some("http://localhost:4318/v1/traces")
+        );
+        assert_eq!(server.otlp_protocol, "http/protobuf");
     }
 
     #[test]
@@ -209,6 +248,10 @@ mod tests {
             (
                 json!({ "type": "a2a", "port": 4002, "agent": "assistant" }),
                 "unknown properties",
+            ),
+            (
+                json!({ "type": "a2a", "port": 4002, "otlp-protocol": "http/json" }),
+                "'otlp-protocol' must be 'grpc' or 'http/protobuf', got 'http/json'",
             ),
         ] {
             let error = handled(properties).unwrap_err().to_string();

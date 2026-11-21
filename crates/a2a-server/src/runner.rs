@@ -13,6 +13,7 @@ use composable_agents::types::{
     TaskState, TaskStatus, TaskStatusUpdateEvent,
 };
 use composable_agents::{AcceptedTask, AgentHost, Outcome};
+use composable_runtime::{PROPAGATION_CONTEXT, PropagationContext};
 use tokio::sync::{OwnedMutexGuard, mpsc, oneshot, watch};
 
 use crate::convert::{a2a_artifact, a2a_event, a2a_status, a2a_task, timestamped, trimmed};
@@ -95,10 +96,21 @@ impl<T: TaskStore, E: ExchangeStore> Runner<T, E> {
     ) -> Result<AcceptedTask, Error> {
         let (accepted_tx, accepted_rx) = oneshot::channel();
         let runner = self.clone();
+        // A spawned task has no task-locals, so the run is given the
+        // request's trace context.
+        let entries = PROPAGATION_CONTEXT
+            .try_with(|context| context.as_ref().map(|context| context.entries.clone()))
+            .ok()
+            .flatten();
         tokio::spawn(async move {
-            runner
-                .run(request, continued, subscriber, history_length, accepted_tx)
-                .await
+            let run = runner.run(request, continued, subscriber, history_length, accepted_tx);
+            match entries {
+                Some(entries) => {
+                    let context = PropagationContext { entries };
+                    PROPAGATION_CONTEXT.scope(Some(context), run).await
+                }
+                None => run.await,
+            }
         });
         accepted_rx
             .await

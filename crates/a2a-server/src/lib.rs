@@ -20,6 +20,7 @@ mod memory;
 mod runner;
 mod server;
 mod service;
+mod span;
 mod store;
 
 pub use config::A2aServerConfig;

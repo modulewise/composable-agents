@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Result, anyhow, bail};
 use composable_agents::AgentHost;
 use composable_runtime::{ComponentHost, ConfigHandler, Service};
+use opentelemetry_sdk::trace::SdkTracerProvider;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
@@ -15,6 +16,7 @@ use crate::config::{self, A2aServerConfig, A2aServerConfigHandler, SharedConfig}
 use crate::handler::RequestHandler;
 use crate::memory::{InMemoryExchangeStore, InMemoryTaskStore};
 use crate::server::A2aServer;
+use crate::span::build_tracer_provider;
 
 // A server with the stores every server uses, which are in memory.
 type Server = A2aServer<InMemoryTaskStore, InMemoryExchangeStore>;
@@ -86,6 +88,24 @@ impl Service for A2aService {
             listeners.push((address, listener));
         }
 
+        // A tracer provider exports spans from a task on the runtime it is
+        // built in, so it is built here, in the runtime that runs the servers.
+        let mut tracer_providers = Vec::with_capacity(server_configs.len());
+        for server_config in &server_configs {
+            let provider = match &server_config.otlp_endpoint {
+                Some(endpoint) => Some(
+                    build_tracer_provider(
+                        endpoint,
+                        &server_config.otlp_protocol,
+                        &server_config.name,
+                    )
+                    .map_err(|e| anyhow!("Server '{}': {e}", server_config.name))?,
+                ),
+                None => None,
+            };
+            tracer_providers.push(provider);
+        }
+
         // Building a server reads its agent's metadata, which is async. It
         // runs on a thread of its own with its own executor since sync
         // `start` is itself called from within a runtime.
@@ -99,8 +119,12 @@ impl Service for A2aService {
                         .build()?
                         .block_on(async {
                             let mut servers = Vec::new();
-                            for server_config in &server_configs {
-                                servers.push(server(server_config, &component_host).await?);
+                            for (server_config, tracer_provider) in
+                                server_configs.iter().zip(tracer_providers)
+                            {
+                                let server =
+                                    server(server_config, &component_host, tracer_provider).await?;
+                                servers.push(server);
                             }
                             Ok::<_, anyhow::Error>(servers)
                         })
@@ -146,6 +170,7 @@ impl Service for A2aService {
 async fn server(
     server_config: &A2aServerConfig,
     component_host: &Arc<dyn ComponentHost>,
+    tracer_provider: Option<SdkTracerProvider>,
 ) -> Result<Server> {
     let name = &server_config.name;
     let host = AgentHost::new(
@@ -170,6 +195,6 @@ async fn server(
     )
     .await
     .map_err(|e| anyhow!("Server '{name}': agent '{agent}': {e}"))?;
-    A2aServer::new(handler, &server_config.interface_url())
+    A2aServer::new(handler, &server_config.interface_url(), tracer_provider)
         .map_err(|e| anyhow!("Server '{name}': agent '{agent}': {e}"))
 }

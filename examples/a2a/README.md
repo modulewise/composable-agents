@@ -108,11 +108,17 @@ example, which exports a span for each invocation and each model call to an
 OTLP collector on `localhost:4317`. That example's `traced-agent.toml` defines
 two components that export the agent interface, `traced-assistant` and the
 `assistant` it wraps. A server serves exactly one agent, so
-`traced-server.toml` selects it:
+`traced-server.toml` selects it, and exports the server's spans to the same
+collector:
 
 ```toml
 [server.assistant]
 type = "a2a"
 port = 4001
 agent-selector = "name=traced-assistant"
+otlp-endpoint = "http://localhost:4317"
 ```
+
+Each request then has a trace with the server's span for the A2A method, the
+agent's `invoke_agent` span as its child, and the model's `chat` spans beneath
+that.

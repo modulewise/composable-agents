@@ -6,6 +6,8 @@ mod common;
 use a2a_json::AgentCard;
 use composable_a2a_server::{A2aServer, AGENT_CARD_PATH, InMemoryTaskStore};
 use composable_runtime::Runtime;
+use opentelemetry::trace::{SpanKind, Status};
+use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
 use reqwest::{Response, StatusCode};
 use serde_json::{Value, json};
 use tokio::sync::watch;
@@ -21,11 +23,16 @@ struct Server {
 
 impl Server {
     async fn start() -> Self {
+        Self::with_tracer_provider(None).await
+    }
+
+    // A server that records its spans with `tracer_provider`.
+    async fn with_tracer_provider(tracer_provider: Option<SdkTracerProvider>) -> Self {
         let (handler, runtime) = common::test_agent_handler(InMemoryTaskStore::default()).await;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
-        let server = A2aServer::new(handler, &url).unwrap();
+        let server = A2aServer::new(handler, &url, tracer_provider).unwrap();
         let (shutdown, shutdown_rx) = watch::channel(false);
         tokio::spawn(server.run(listener, shutdown_rx));
         Server {
@@ -384,4 +391,151 @@ async fn a_request_whose_content_type_is_not_json_is_unsupported_media_type() {
     assert_eq!(response.status(), StatusCode::OK);
     let response: Value = response.json().await.unwrap();
     assert_eq!(response["result"]["task"]["id"], "task-m1");
+}
+
+// A server that records its spans in `exporter`.
+async fn traced_server(exporter: &InMemorySpanExporter) -> Server {
+    let provider = SdkTracerProvider::builder()
+        .with_simple_exporter(exporter.clone())
+        .build();
+    Server::with_tracer_provider(Some(provider)).await
+}
+
+// The spans `exporter` has once it has `count` of them. A stream's span ends
+// after the client reads the stream, so it may arrive later.
+async fn finished_spans(exporter: &InMemorySpanExporter, count: usize) -> Vec<SpanData> {
+    for _ in 0..100 {
+        let spans = exporter.get_finished_spans().unwrap();
+        if spans.len() >= count {
+            return spans;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("expected {count} spans");
+}
+
+// The value of the span's attribute `key`, if it has one.
+fn attribute(span: &SpanData, key: &str) -> Option<String> {
+    span.attributes
+        .iter()
+        .find(|attribute| attribute.key.as_str() == key)
+        .map(|attribute| attribute.value.as_str().to_string())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_has_a_server_span_with_its_a2a_attributes() {
+    let exporter = InMemorySpanExporter::default();
+    let server = traced_server(&exporter).await;
+    server.call("SendMessage", message("m1", "hello")).await;
+
+    let spans = finished_spans(&exporter, 1).await;
+    let span = &spans[0];
+    assert_eq!(span.name, "SendMessage");
+    assert_eq!(span.span_kind, SpanKind::Server);
+    assert_eq!(span.status, Status::Unset);
+    for (key, value) in [
+        ("a2a.method.name", "SendMessage"),
+        ("a2a.message.id", "m1"),
+        ("a2a.task.id", "task-m1"),
+        ("a2a.task.state", "TASK_STATE_COMPLETED"),
+        ("gen_ai.conversation.id", "context-m1"),
+        ("gen_ai.agent.name", "test-agent"),
+        ("gen_ai.agent.version", "0.1.0"),
+        ("a2a.protocol.version", "1.0"),
+        ("jsonrpc.request.id", "7"),
+    ] {
+        assert_eq!(attribute(span, key).as_deref(), Some(value), "{key}");
+    }
+    assert_eq!(attribute(span, "error.type"), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_span_continues_the_trace_of_its_traceparent() {
+    let exporter = InMemorySpanExporter::default();
+    let server = traced_server(&exporter).await;
+    let trace_id = "4bf92f3577b34da6a3ce929d0e0e4736";
+    let parent_id = "00f067aa0ba902b7";
+    server
+        .client
+        .post(&server.url)
+        .header("A2A-Version", "1.0")
+        .header("traceparent", format!("00-{trace_id}-{parent_id}-01"))
+        .json(&request("GetTask", json!({ "id": "task-none" })))
+        .send()
+        .await
+        .unwrap();
+
+    let spans = finished_spans(&exporter, 1).await;
+    let span = &spans[0];
+    assert_eq!(format!("{:032x}", span.span_context.trace_id()), trace_id);
+    assert_eq!(format!("{:016x}", span.parent_span_id), parent_id);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_request_has_its_a2a_reason_or_its_code_as_the_error_type() {
+    let exporter = InMemorySpanExporter::default();
+    let server = traced_server(&exporter).await;
+    server.call("GetTask", json!({ "id": "task-none" })).await;
+    server.call("GetTask", json!({ "id": 7 })).await;
+
+    let spans = finished_spans(&exporter, 2).await;
+    let error_types: Vec<_> = spans
+        .iter()
+        .map(|span| attribute(span, "error.type"))
+        .collect();
+    assert_eq!(
+        error_types,
+        [
+            Some("TASK_NOT_FOUND".to_string()),
+            Some("-32602".to_string())
+        ]
+    );
+    assert!(
+        spans
+            .iter()
+            .all(|span| matches!(span.status, Status::Error { .. }))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_with_no_a2a_method_has_no_span() {
+    let exporter = InMemorySpanExporter::default();
+    let server = traced_server(&exporter).await;
+    server.call("NotAMethod", json!({})).await;
+    let not_json = server
+        .client
+        .post(&server.url)
+        .header("A2A-Version", "1.0")
+        .header("Content-Type", "application/json")
+        .body("{not json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(not_json.status(), StatusCode::OK);
+
+    // A request with a method has a span, so it shows the others have none.
+    server.call("GetTask", json!({ "id": "task-none" })).await;
+    let spans = finished_spans(&exporter, 1).await;
+    assert_eq!(spans.len(), 1);
+    assert_eq!(spans[0].name, "GetTask");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stream_span_ends_with_the_stream_and_has_no_task_state() {
+    let exporter = InMemorySpanExporter::default();
+    let server = traced_server(&exporter).await;
+    let response = server
+        .post(&request("SendStreamingMessage", message("m1", "chunks")))
+        .await;
+    response.bytes().await.unwrap();
+
+    let spans = finished_spans(&exporter, 1).await;
+    let span = &spans[0];
+    assert_eq!(span.name, "SendStreamingMessage");
+    assert_eq!(attribute(span, "a2a.task.id").as_deref(), Some("task-m1"));
+    assert_eq!(
+        attribute(span, "gen_ai.conversation.id").as_deref(),
+        Some("context-m1")
+    );
+    assert_eq!(attribute(span, "a2a.task.state"), None);
 }

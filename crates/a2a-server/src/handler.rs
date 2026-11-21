@@ -59,6 +59,11 @@ impl<T: TaskStore, E: ExchangeStore> RequestHandler<T, E> {
         })
     }
 
+    /// The agent's metadata, as its `metadata()` returned it.
+    pub fn metadata(&self) -> &AgentMetadata {
+        &self.metadata
+    }
+
     /// The agent's card, with its JSON-RPC interface at `url`. Fails when a
     /// list that A2A requires to have at least one element is empty in the
     /// agent's metadata.

@@ -34,6 +34,8 @@ port = 4001
 | `host` | no | the address to listen on (default `127.0.0.1`) |
 | `agent-selector` | no | selects the agent to serve, e.g. `name=assistant` (default: every agent) |
 | `url` | no | the URL of the server in the agent's card (default `http://<host>:<port>`) |
+| `otlp-endpoint` | no | the OTLP endpoint to which the server's spans export (default: no spans) |
+| `otlp-protocol` | no | `grpc` or `http/protobuf` (default `grpc`) |
 
 A server serves exactly one agent, and fails to start when its definition
 selects none or more than one. An agent that an interceptor wraps and the
@@ -131,3 +133,30 @@ Tasks and contexts are (currently) kept in memory, so they are lost when the
 server stops. The server keeps 256 tasks, and evicts terminal tasks first, then
 interrupted ones, and never a task that is running. It keeps the exchanges of
 256 contexts.
+
+## Tracing
+
+With `otlp-endpoint`, each request for an A2A method has a span, following
+the OpenTelemetry GenAI semantic conventions for A2A, which exports to that
+endpoint.
+
+- **The span's name** is the method, e.g. `SendMessage`, and its kind is
+  `SERVER`.
+- **Its `service.name`** is the server's name, the `NAME` of its
+  `[server.NAME]`.
+- **Its parent** is the request's `traceparent`, if any. The agent runs in the
+  span's trace context, so the spans of an agent that `agent-otel-interceptor`
+  wraps are its children.
+- **Its attributes** are `a2a.method.name`, `a2a.protocol.version` and
+  `jsonrpc.request.id`, the agent's `gen_ai.agent.name`, `.description` and
+  `.version`, and these from the request and the response:
+  `a2a.message.id`, `a2a.message.reference_task_ids`, `a2a.task.id`,
+  `a2a.task.state`, `a2a.tenant` and `gen_ai.conversation.id`.
+- **A failed request** has `error.type`, which is the error's A2A reason (e.g.
+  `TASK_NOT_FOUND`), or its JSON-RPC code when it has none. A task in the
+  `failed` state is a successful response.
+- **A streaming request's span** ends when its stream ends, and has no
+  `a2a.task.state`, since a stream transitions through task states.
+- **A request refused before its method is known** (e.g. a `415`, or a body
+  that is not a JSON-RPC request) has no span, and neither does a request for
+  a method that is not defined within A2A.
