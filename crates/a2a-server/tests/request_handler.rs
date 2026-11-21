@@ -11,7 +11,7 @@ use a2a_json::{
     SendMessageConfiguration, SendMessageRequest, SendMessageResponse, StreamResponse,
     SubscribeToTaskRequest, Task, TaskState,
 };
-use composable_a2a_server::CallContext;
+use composable_a2a_server::{CallContext, InMemoryTaskStore};
 use composable_runtime::Runtime;
 use serde_json::json;
 use tokio::sync::mpsc;
@@ -25,7 +25,12 @@ struct Server {
 
 impl Server {
     async fn start() -> Self {
-        let (handler, runtime) = common::test_agent_handler().await;
+        Self::with_tasks(InMemoryTaskStore::default()).await
+    }
+
+    // A server that stores its tasks in `tasks`.
+    async fn with_tasks(tasks: InMemoryTaskStore) -> Self {
+        let (handler, runtime) = common::test_agent_handler(tasks).await;
         Server {
             handler,
             _runtime: runtime,
@@ -287,6 +292,27 @@ async fn a_task_returned_immediately_is_still_running_and_can_be_canceled() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn canceling_a_task_cancels_the_run_that_continues_it() {
+    let server = Server::start().await;
+    server.send(message("m1", "ask")).await;
+    let continuing = for_task(message("m2", "wait"), "task-m1");
+    server
+        .send_message(configured(continuing, return_immediately()))
+        .await
+        .unwrap();
+
+    let task = server.cancel_task("task-m1").await.unwrap();
+    assert_eq!(task.status.state, TaskState::Canceled);
+
+    // The agent ends a canceled run with an exchange, so the context has one
+    // exchange from each of the task's two runs.
+    let next = server
+        .send(in_context(message("m3", "three"), "context-m1"))
+        .await;
+    assert_eq!(text(&next.artifacts[0].parts), "three (history: 2)");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_interrupted_task_can_be_canceled() {
     let server = Server::start().await;
     server.send(message("m1", "ask")).await;
@@ -515,11 +541,52 @@ async fn each_subscriber_of_a_running_task_has_the_task_then_its_later_updates()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_subscription_to_an_interrupted_task_has_the_task_and_ends() {
+async fn a_subscription_stays_open_while_its_task_is_interrupted() {
+    let server = Server::start().await;
+    // The stream of a message ends when the task is interrupted.
+    let first = server.stream(request(message("m1", "ask"))).await.unwrap();
+    assert_eq!(
+        responses(first).await,
+        ["task Submitted", "status Working", "status InputRequired"]
+    );
+
+    // A subscription has the updates of the run that continues the task, and
+    // ends when the task is terminal.
+    let subscription = server.subscribe("task-m1").await.unwrap();
+    let continuing = for_task(message("m2", "yes"), "task-m1");
+    let second = server.stream(request(continuing)).await.unwrap();
+    let expected = [
+        "task InputRequired",
+        "status Working",
+        "artifact \"continued: yes\" append=false last=true",
+        "status Completed",
+    ];
+    assert_eq!(responses(second).await, expected);
+    assert_eq!(responses(subscription).await, expected);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_subscription_to_an_interrupted_task_ends_when_the_task_is_canceled() {
     let server = Server::start().await;
     server.send(message("m1", "ask")).await;
-    let stream = server.subscribe("task-m1").await.unwrap();
-    assert_eq!(responses(stream).await, ["task InputRequired"]);
+    let subscription = server.subscribe("task-m1").await.unwrap();
+    let task = server.cancel_task("task-m1").await.unwrap();
+    assert_eq!(task.status.state, TaskState::Canceled);
+    assert_eq!(
+        responses(subscription).await,
+        ["task InputRequired", "status Canceled"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_subscription_ends_when_the_store_evicts_its_task() {
+    let server = Server::with_tasks(InMemoryTaskStore::new(1)).await;
+    server.send(message("m1", "ask")).await;
+    let subscription = server.subscribe("task-m1").await.unwrap();
+
+    // The store keeps one task, so it evicts the interrupted task.
+    server.send(message("m2", "hello")).await;
+    assert_eq!(responses(subscription).await, ["task InputRequired"]);
 }
 
 #[tokio::test(flavor = "multi_thread")]

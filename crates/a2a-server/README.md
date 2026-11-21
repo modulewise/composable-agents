@@ -81,12 +81,12 @@ skill with no tag, since A2A requires at least one of each.
 
 | Operation | |
 |---|---|
-| `SendMessage` | Returns the task once it is terminal or interrupted, or with `returnImmediately` once the agent has accepted the message. |
+| `SendMessage` | Returns the task once it reaches a terminal or interrupted state, or with `returnImmediately` as soon as the agent has accepted the message. |
 | `SendStreamingMessage` | Returns an event stream. Each event is a JSON-RPC response with the task, then each status and artifact update, ending with the final status. |
 | `GetTask` | Returns the task. |
 | `ListTasks` | Returns a page of tasks, ordered by the time of each task's status, the most recent first. A page has 50 tasks by default and at most 100. |
 | `CancelTask` | Cancels the task and returns it once it is canceled. |
-| `SubscribeToTask` | Returns an event stream that begins with the task. For a task that is running, it then has each later update. |
+| `SubscribeToTask` | Returns an event stream that begins with the task, then has each later update until the task reaches a terminal state. |
 | the push notification config operations | `PushNotificationNotSupportedError` |
 | `GetExtendedAgentCard` | `UnsupportedOperationError` |
 
@@ -119,9 +119,13 @@ error's reason and the domain `a2a-protocol.org`:
 - **A context** keeps the model exchanges of its tasks, which are provided as
   the conversation history of each later task in that context. They are not
   sent to a client.
-- **A stream** ends when the task is terminal or interrupted. Several clients
-  can subscribe to one task. A client that reads too slowly has its stream
-  ended, and can subscribe again.
+- **A stream from `SendStreamingMessage`** ends when the task reaches a
+  terminal or interrupted state.
+- **A stream from `SubscribeToTask`** ends when the task reaches a terminal
+  state. It stays open while the task is in an interrupted state, and includes
+  the updates of the run that continues the task.
+- **Several clients** can subscribe to one task. The server closes the stream
+  of a client that reads too slowly, and that client can subscribe again.
 
 Tasks and contexts are (currently) kept in memory, so they are lost when the
 server stops. The server keeps 256 tasks, and evicts terminal tasks first, then

@@ -6,17 +6,15 @@ use a2a_json as a2a;
 use a2a_json::jsonrpc::{Error, code};
 use a2a_json::method;
 use anyhow::anyhow;
-use composable_agents::types::{
-    AgentEvent, AgentMetadata, AgentRequest, Task, TaskState, TaskStatus, TaskStatusUpdateEvent,
-};
+use composable_agents::types::{AgentMetadata, AgentRequest, Task};
 use composable_agents::{AcceptedTask, AgentHost};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use tokio::sync::mpsc;
 
 use crate::card;
-use crate::convert::{a2a_task, agent_message, agent_state, json_text, timestamped, trimmed};
-use crate::runner::{Runner, SUBSCRIBER_BUFFER, internal, store_error};
+use crate::convert::{a2a_task, agent_message, agent_state, json_text, trimmed};
+use crate::runner::{Runner, SUBSCRIBER_BUFFER, internal, store_error, task_not_found};
 use crate::store::{ExchangeStore, TaskQuery, TaskStore, is_interrupted, is_terminal};
 
 // The page size of `ListTasks` when the request does not specify one, and the
@@ -157,38 +155,17 @@ impl<T: TaskStore, E: ExchangeStore> RequestHandler<T, E> {
     }
 
     /// Returns the stream of responses for a task that is not terminal. The
-    /// stream begins with the task as stored. For a task with a run in
-    /// progress, it then has each later status and artifact update, and ends
-    /// when the task is terminal or interrupted. An interrupted task has no
-    /// run, so its stream ends after the task.
+    /// stream begins with the task as stored, then has each later status and
+    /// artifact update, and ends when the task is terminal. It stays open
+    /// while the task is interrupted, and has the updates of the run that
+    /// continues the task.
     pub async fn subscribe_to_task(
         &self,
         request: a2a::SubscribeToTaskRequest,
         _context: &CallContext,
     ) -> Result<mpsc::Receiver<a2a::StreamResponse>, Error> {
-        let task = self
-            .stored_task(&request.id)
-            .await?
-            .ok_or_else(|| task_not_found(&request.id))?;
-        if is_terminal(task.status.state) {
-            return Err(Error::new(
-                code::UNSUPPORTED_OPERATION,
-                format!("task {} is in a terminal state", request.id),
-            ));
-        }
         let (subscriber, responses) = mpsc::channel(SUBSCRIBER_BUFFER);
-        if !self
-            .runner
-            .subscribe(&request.id, subscriber.clone())
-            .await?
-        {
-            let task = self
-                .stored_task(&request.id)
-                .await?
-                .ok_or_else(|| task_not_found(&request.id))?;
-            let task = a2a_json_task(task, None)?;
-            let _ = subscriber.try_send(a2a::StreamResponse::Task(task));
-        }
+        self.runner.subscribe(&request.id, subscriber).await?;
         Ok(responses)
     }
 
@@ -339,19 +316,7 @@ impl<T: TaskStore, E: ExchangeStore> RequestHandler<T, E> {
                 format!("task {} is in a terminal state", request.id),
             ));
         }
-        if !self.runner.cancel(&request.id).await {
-            let event = AgentEvent::Status(TaskStatusUpdateEvent {
-                task_id: task.id.clone(),
-                context_id: task.context_id.clone().unwrap_or_default(),
-                status: timestamped(TaskStatus {
-                    state: TaskState::Canceled,
-                    message: None,
-                    timestamp: None,
-                }),
-                metadata: None,
-            });
-            self.runner.tasks.apply(event).await.map_err(store_error)?;
-        }
+        self.runner.cancel(&request.id).await?;
         let task = self
             .stored_task(&request.id)
             .await?
@@ -494,10 +459,6 @@ fn history_length(value: Option<i32>) -> Result<Option<usize>, Error> {
 fn a2a_json_task(task: Task, history_length: Option<usize>) -> Result<a2a::Task, Error> {
     let task = a2a_task(task).map_err(|e| Error::new(code::INVALID_AGENT_RESPONSE, e))?;
     Ok(trimmed(task, history_length))
-}
-
-fn task_not_found(id: &str) -> Error {
-    Error::new(code::TASK_NOT_FOUND, format!("no task with id {id}"))
 }
 
 fn no_extended_agent_card() -> Error {

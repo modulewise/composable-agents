@@ -4,7 +4,7 @@
 mod common;
 
 use a2a_json::AgentCard;
-use composable_a2a_server::{A2aServer, AGENT_CARD_PATH};
+use composable_a2a_server::{A2aServer, AGENT_CARD_PATH, InMemoryTaskStore};
 use composable_runtime::Runtime;
 use reqwest::{Response, StatusCode};
 use serde_json::{Value, json};
@@ -21,7 +21,7 @@ struct Server {
 
 impl Server {
     async fn start() -> Self {
-        let (handler, runtime) = common::test_agent_handler().await;
+        let (handler, runtime) = common::test_agent_handler(InMemoryTaskStore::default()).await;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -312,13 +312,21 @@ async fn a_subscription_has_an_event_stream_that_begins_with_the_task() {
         .await;
     assert_eq!(response.headers()["content-type"], "text/event-stream");
 
+    // The stream stays open while the task is interrupted, and ends when
+    // the task is canceled.
+    server.call("CancelTask", json!({ "id": "task-m1" })).await;
     let body = response.bytes().await.unwrap();
     let events = sse::Parser::default().feed(&body);
-    assert_eq!(events.len(), 1);
-    let response: Value = serde_json::from_str(&events[0].data).unwrap();
+    assert_eq!(events.len(), 2);
+    let task: Value = serde_json::from_str(&events[0].data).unwrap();
     assert_eq!(
-        response["result"]["task"]["status"]["state"],
+        task["result"]["task"]["status"]["state"],
         "TASK_STATE_INPUT_REQUIRED"
+    );
+    let canceled: Value = serde_json::from_str(&events[1].data).unwrap();
+    assert_eq!(
+        canceled["result"]["statusUpdate"]["status"]["state"],
+        "TASK_STATE_CANCELED"
     );
 }
 

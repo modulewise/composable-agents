@@ -13,8 +13,8 @@
 //! - any other text: the task completes with an artifact that has the text
 //!   and the number of exchanges in the request's history.
 //!
-//! A message that continues an interrupted task completes the task. The agent
-//! activates every extension a request asks for.
+//! A message that continues an interrupted task completes the task, unless its
+//! text is `wait`. The agent activates every extension a request asks for.
 
 wit_bindgen::generate!({
     path: ["../../../../components/agents/wit", "wit"],
@@ -129,7 +129,7 @@ async fn run(
         .await;
 
     // A request with a task status continues an interrupted task.
-    if request.task_status.is_some() {
+    if request.task_status.is_some() && text != "wait" {
         return completed(ids, events, text, format!("continued: {text}")).await;
     }
     match text {

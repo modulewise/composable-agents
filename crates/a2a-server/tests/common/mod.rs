@@ -12,9 +12,9 @@ use composable_runtime::Runtime;
 
 pub type Handler = RequestHandler<InMemoryTaskStore, InMemoryExchangeStore>;
 
-/// A request handler for the test agent, with the runtime that hosts the
-/// agent.
-pub async fn test_agent_handler() -> (Handler, Runtime) {
+/// A request handler for the test agent that stores its tasks in `tasks`,
+/// with the runtime that hosts the agent.
+pub async fn test_agent_handler(tasks: InMemoryTaskStore) -> (Handler, Runtime) {
     // The component's name is its file's name without the extension.
     let runtime = Runtime::builder()
         .from_paths(&[test_agent().to_path_buf()])
@@ -23,14 +23,9 @@ pub async fn test_agent_handler() -> (Handler, Runtime) {
         .unwrap();
     runtime.start().unwrap();
     let host = Arc::new(AgentHost::new(runtime.host(), None));
-    let handler = RequestHandler::new(
-        host,
-        "test-agent",
-        InMemoryTaskStore::default(),
-        InMemoryExchangeStore::default(),
-    )
-    .await
-    .unwrap();
+    let handler = RequestHandler::new(host, "test-agent", tasks, InMemoryExchangeStore::default())
+        .await
+        .unwrap();
     (handler, runtime)
 }
 
