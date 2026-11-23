@@ -10,7 +10,7 @@ mod config;
 mod service;
 mod usage;
 
-pub use agents::{AGENT_EXPORT, AGENT_METADATA, AgentHost, Outcome, exports_agent};
+pub use agents::{AGENT_EXPORT, AGENT_METADATA, AcceptedTask, AgentHost, Outcome, exports_agent};
 pub use bindings::composable::agents::types;
 pub use bindings::composable::models::types as model_types;
 pub use service::AgentService;

@@ -1,0 +1,37 @@
+[package]
+name = "composable-a2a-server"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "a2a-server"
+path = "src/main.rs"
+
+[dependencies]
+a2a-json = { path = "../a2a-json" }
+anyhow.workspace = true
+axum = "0.8"
+clap = { version = "4.6", features = ["derive"] }
+composable-agents = { path = "../.." }
+composable-otel = { git = "https://github.com/modulewise/composable-runtime", branch = "main" }
+composable-runtime.workspace = true
+composable-tools = { git = "https://github.com/modulewise/composable-tools", branch = "main" }
+http-body-util = "0.1"
+opentelemetry = "0.33"
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["grpc-tonic", "http-proto", "reqwest-client", "trace"] }
+opentelemetry_sdk = { version = "0.33", features = ["rt-tokio", "trace", "experimental_trace_batch_span_processor_with_async_runtime"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
+serde = "1"
+serde_json.workspace = true
+sse = { path = "../sse" }
+time = { version = "0.3", default-features = false, features = ["std", "formatting", "parsing"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync"] }
+tokio-stream = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+opentelemetry_sdk = { version = "0.33", features = ["testing"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }

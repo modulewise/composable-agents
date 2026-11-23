@@ -8,12 +8,14 @@ Agents and model clients as Wasm components that run on
 The WIT they implement is in [components/agents](components/agents)
 (`composable:agents`) and [components/models](components/models)
 (`composable:models`). A client for agents on A2A servers is in
-[components/a2a](components/a2a) (`composable:a2a`).
+[components/a2a](components/a2a) (`composable:a2a`), and a server for agents
+is in [crates/a2a-server](crates/a2a-server).
 
 ## Examples
 
 - [examples/chat-agent](examples/chat-agent)
 - [examples/tool-calling-agent](examples/tool-calling-agent)
+- [examples/a2a](examples/a2a)
 
 ## Config
 
@@ -57,6 +59,7 @@ instructions = "Answer in one or two sentences."
 | `description` | yes | the agent's description, in its metadata |
 | `version` | yes | the agent's version, in its metadata |
 | `instructions` | no | the model's system instructions |
+| `input-modes` | no | the media types the agent accepts in a message, in its metadata (default `["text/plain"]`) |
 | `report-reasoning` | no | `true` to emit the model's reasoning in status messages (default `false`). It has an effect only when the agent's model has `include-reasoning` |
 | `toolset` | no | the name of a component exporting `composable:tools/toolset`, such as a `[toolset]` |
 | `max-turns` | no | with a `toolset`: the most model calls allowed per invocation (default 8) |
@@ -102,6 +105,11 @@ stderr. It exits successfully only when the task completes.
 ```sh
 agents invoke config.toml -- assistant "Why is the sky blue?"
 ```
+
+## A2A server
+
+`a2a-server` serves an agent with A2A's JSON-RPC binding. See
+[crates/a2a-server](crates/a2a-server).
 
 ## License
 

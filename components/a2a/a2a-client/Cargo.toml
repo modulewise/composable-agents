@@ -7,6 +7,7 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
+a2a-json = { path = "../../../crates/a2a-json" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sse = { path = "../../../crates/sse" }

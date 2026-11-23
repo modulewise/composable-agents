@@ -6,10 +6,19 @@ version = 4
 name = "a2a-client"
 version = "0.1.0"
 dependencies = [
+ "a2a-json",
  "serde",
  "serde_json",
  "sse",
  "wit-bindgen",
+]
+
+[[package]]
+name = "a2a-json"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -41,6 +50,7 @@ dependencies = [
 name = "agent-support"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "uuid",
  "wit-bindgen",
 ]

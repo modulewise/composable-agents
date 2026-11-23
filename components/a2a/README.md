@@ -77,7 +77,8 @@ its signatures.
 
 Exports `composable:tools/tool` for one agent on an A2A server, so an agent
 calls another agent as it calls any tool. It imports `client`, and connects to
-the agent on first use.
+the agent on first use. [examples/a2a](../../examples/a2a) has an agent that
+uses one.
 
 The tool's metadata comes from the agent's card, including its name and
 description, and it expects one string argument: `message`.

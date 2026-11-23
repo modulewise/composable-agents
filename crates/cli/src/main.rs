@@ -107,6 +107,8 @@ async fn invoke(host: &AgentHost, agent: &str, text: String) -> Result<ExitCode>
             async move {
                 let _ = canceled.await;
             },
+            // The CLI shows the task's events and doesn't need its ids.
+            |_task| {},
             |event| {
                 if !show_event(event, &mut stdout, terminal, &mut needs_newline) {
                     cancel = None;

@@ -1,0 +1,17 @@
+# An agent that calls an agent on an A2A server as a tool. The server's URL is
+# A2A_SERVER_URL, or this example's server if it isn't set. The model is in a
+# file of the tool-calling-agent example.
+
+[a2a-tool.remote-agent]
+server-url = "${process:env:A2A_SERVER_URL|http://127.0.0.1:4001}"
+
+[toolset.tools]
+tools = ["remote-agent"]
+
+[agent.caller]
+model = "model"
+toolset = "tools"
+description = "Sends each message to an agent on an A2A server"
+version = "0.1.0"
+instructions = "Send the user's message to the remote agent with the tool, and reply with exactly what it returns."
+report-tool-calls = true

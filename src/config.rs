@@ -108,6 +108,7 @@ impl ConfigHandler for AgentConfigHandler {
                     "instructions",
                     "description",
                     "version",
+                    "input-modes",
                     "max-turns",
                     "report-reasoning",
                     "report-tool-calls",
@@ -271,6 +272,14 @@ impl AgentConfigHandler {
         }
         if let Some(report_reasoning) = optional_bool(&context, "report-reasoning", properties)? {
             config.insert("report-reasoning".to_string(), json!(report_reasoning));
+        }
+        // The input modes are passed as a JSON array.
+        if let Some(input_modes) = optional_strings(&context, "input-modes", properties)? {
+            if input_modes.is_empty() {
+                bail!("{context}: 'input-modes' must have at least one media type");
+            }
+            let input_modes = serde_json::to_string(&input_modes)?;
+            config.insert("input-modes".to_string(), json!(input_modes));
         }
         // `max-turns` and `report-tool-calls` are tool-calling-agent settings,
         // rejected for an agent without a toolset.
@@ -1031,6 +1040,56 @@ mod tests {
             error.contains("'max-turns' must be greater than 0"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn input_modes_are_passed_as_a_json_array() {
+        let mut handler = AgentConfigHandler::default();
+        let produced = produced(
+            handler
+                .handle_definition(definition(
+                    "agent",
+                    "helper",
+                    json!({
+                        "model": "local",
+                        "description": "Helps",
+                        "version": "1.0.0",
+                        "input-modes": ["text/plain", "image/png"],
+                    }),
+                ))
+                .unwrap(),
+        );
+        assert_eq!(
+            produced[&key("component", "helper")]["config"]["input-modes"],
+            json!(r#"["text/plain","image/png"]"#)
+        );
+    }
+
+    #[test]
+    fn input_modes_must_be_a_list_with_at_least_one_media_type() {
+        for (value, expected) in [
+            (json!([]), "'input-modes' must have at least one media type"),
+            (
+                json!("text/plain"),
+                "'input-modes' must be a list of strings",
+            ),
+        ] {
+            let mut handler = AgentConfigHandler::default();
+            let error = handler
+                .handle_definition(definition(
+                    "agent",
+                    "helper",
+                    json!({
+                        "model": "local",
+                        "description": "Helps",
+                        "version": "1.0.0",
+                        "input-modes": value,
+                    }),
+                ))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(expected), "{error}");
+        }
     }
 
     #[test]

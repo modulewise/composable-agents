@@ -1,0 +1,16 @@
+[package]
+name = "tck-agent"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+agent-support = { path = "../../../../components/agents/agent-support" }
+wit-bindgen = { version = "0.63", features = ["async-spawn"] }
+
+# Built by `build.sh` as a component, to run the A2A TCK against the server.
+# It is not a member of the repository's workspace.
+[workspace]

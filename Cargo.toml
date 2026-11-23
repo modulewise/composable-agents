@@ -4,7 +4,12 @@ version.workspace = true
 edition.workspace = true
 
 [workspace]
-members = ["crates/cli", "crates/sse"]
+members = [
+    "crates/a2a-json",
+    "crates/a2a-server",
+    "crates/cli",
+    "crates/sse",
+]
 resolver = "3"
 
 [workspace.package]

@@ -1,0 +1,19 @@
+# The TCK agent on an A2A server. Run `a2a-server tck-agent.toml` in this
+# directory, after `build.sh`.
+
+[component.tck-agent]
+uri = "target/tck-agent.wasm"
+imports = ["clocks", "random"]
+config.name = "tck-agent"
+config.description = "Behaves as the A2A TCK's scenarios specify"
+config.version = "0.1.0"
+
+[capability.clocks]
+type = "wasi:clocks"
+
+[capability.random]
+type = "wasi:random"
+
+[server.tck-agent]
+type = "a2a"
+port = 9999

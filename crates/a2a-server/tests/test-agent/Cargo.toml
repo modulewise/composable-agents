@@ -1,0 +1,15 @@
+[package]
+name = "test-agent"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = { version = "0.63", features = ["async-spawn"] }
+
+# The server's integration tests build this package as a component.
+# It is not a member of the repository's workspace.
+[workspace]

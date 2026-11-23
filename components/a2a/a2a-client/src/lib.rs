@@ -13,6 +13,7 @@ mod mapping;
 
 use std::cell::RefCell;
 
+use a2a_json::{jsonrpc, method};
 use composable::a2a::types::{AgentCard, AgentInterface, StreamResponse};
 use composable::agents::types::{Task, TaskState};
 use exports::composable::a2a::client::{
@@ -28,7 +29,7 @@ use componentized::http::client::HttpResponse;
 const WELL_KNOWN_CARD: &str = "/.well-known/agent-card.json";
 
 /// The A2A version the client uses.
-const A2A_VERSION: &str = "1.0";
+const A2A_VERSION: &str = a2a_json::PROTOCOL_VERSION;
 
 const VERSION_HEADER: &str = "a2a-version";
 const EXTENSIONS_HEADER: &str = "a2a-extensions";
@@ -94,7 +95,7 @@ impl GuestAgent for RemoteAgent {
         request: SendMessageRequest,
     ) -> Result<SendMessageResponse, Error> {
         let params = mapping::send_message_params(&request, self.tenant())?;
-        let result = self.call("SendMessage", params).await?;
+        let result = self.call(method::SEND_MESSAGE, params).await?;
         Ok(mapping::send_message_response(result)?)
     }
 
@@ -104,7 +105,7 @@ impl GuestAgent for RemoteAgent {
     ) -> Result<MessageResponseStream, Error> {
         let params = mapping::send_message_params(&request, self.tenant())?;
         let response = self
-            .send("SendStreamingMessage", params, EVENT_STREAM)
+            .send(method::SEND_STREAMING_MESSAGE, params, EVENT_STREAM)
             .await?;
         if is_event_stream(&response.headers) {
             let body = response.body;
@@ -123,19 +124,21 @@ impl GuestAgent for RemoteAgent {
     }
 
     async fn get_task(&self, request: GetTaskRequest) -> Result<Task, Error> {
-        let params = mapping::get_task_params(&request, self.tenant());
-        Ok(mapping::task(self.call("GetTask", params).await?)?)
+        let params = mapping::get_task_params(&request, self.tenant())?;
+        Ok(mapping::task(self.call(method::GET_TASK, params).await?)?)
     }
 
     async fn list_tasks(&self, request: ListTasksRequest) -> Result<ListTasksResponse, Error> {
-        let params = mapping::list_tasks_params(&request, self.tenant());
-        let result = self.call("ListTasks", params).await?;
+        let params = mapping::list_tasks_params(&request, self.tenant())?;
+        let result = self.call(method::LIST_TASKS, params).await?;
         Ok(mapping::list_tasks_response(result)?)
     }
 
     async fn cancel_task(&self, request: CancelTaskRequest) -> Result<Task, Error> {
         let params = mapping::cancel_task_params(&request, self.tenant())?;
-        Ok(mapping::task(self.call("CancelTask", params).await?)?)
+        Ok(mapping::task(
+            self.call(method::CANCEL_TASK, params).await?,
+        )?)
     }
 }
 
@@ -155,12 +158,7 @@ impl RemoteAgent {
     // the response lists as activated. An error status fails with the
     // JSON-RPC error in its body, if it has one.
     async fn send(&self, method: &str, params: Value, accept: &str) -> Result<HttpResponse, Error> {
-        let body = json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": method,
-            "params": params,
-        });
+        let body = json!(jsonrpc::Request::new(json!(1), method, params));
         let mut headers = vec![
             ("content-type".to_string(), "application/json".to_string()),
             ("accept".to_string(), accept.to_string()),
